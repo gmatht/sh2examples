@@ -1,0 +1,3 @@
+fn main() {
+    println!("{}", { let __si = { let __v = std::env::var("MOUNTPOINT").unwrap_or_default(); if __v.is_empty() { format!("{}", std::env::var("NAME").unwrap_or_default()) } else { __v.to_string() } }; let __st = __si.strip_suffix('\n').unwrap_or(&__si); if __st.len() >= 6 && (__st.starts_with("list#") || __st.starts_with("obj#")) && __st[5..].parse::<usize>().is_ok() { vec![__si.to_string()] } else { __si.split(|c| c == ' ' || c == '\t' || c == '\n') .filter(|x| !x.is_empty()).map(|x| x.to_string()).collect::<Vec<String>>() } }.join(" "));
+}

@@ -1,0 +1,239 @@
+diff --git a/src/c_backend.rs b/src/c_backend.rs
+index 11d97bd75..47d60ebc5 100644
+--- a/src/c_backend.rs
++++ b/src/c_backend.rs
+@@ -21109,11 +21109,45 @@ fn param_copy_alias(
+         }
+     }
+ 
+-    /// `$( raw shell text )` inside an interpolated heredoc: run it in a
+-    /// child bash (the referenced variables are exported first) and
+-    /// capture stdout. This is the one genuinely unavoidable shell-out —
+-    /// arbitrary command substitution text has no native C lowering.
++    /// `$( raw shell text )` inside an interpolated heredoc (`${V:-$(cmd)}`
++    /// arrives the same way — the core delivers the default word as raw
++    /// text): capture stdout.
++    ///
++    /// A command substitution whose text is ONE simple command of literal
++    /// words (`$(whoami)`, `$(pwd)`, `$(uname -s)`) is an argv, not a
++    /// program: it lowers to the native capture — `getcwd(3)` where the
++    /// command is a builtin, an `execvp` of that exact argv otherwise —
++    /// so the reference-variable export and the child `bash -c` both
++    /// disappear. Anything else (an operator, an expansion, a glob, a
++    /// redirect) keeps the shell-out below, which stays the correct
++    /// lowering for text that IS a shell program.
+     fn capture_text_c(&mut self, cmd: &str) -> String {
++        if let Some(words) = Self::literal_argv(cmd) {
++            // `native_capture_cmd` takes the ARGUMENT words only (its `pwd`
++            // arm is `words.is_empty()`), exactly like `test_foldable_capture`.
++            let args: Vec<IrExpr> = words[1..]
++                .iter()
++                .map(|w| IrExpr::Str(w.clone(), crate::ir::StrStyle::DoubleQuoted))
++                .collect();
++            let shape = [
++                IrExpr::Str(words[0].clone(), crate::ir::StrStyle::DoubleQuoted),
++                IrExpr::Array(args),
++            ];
++            if let Some(e) = self.native_capture_cmd(&words[0], &shape) {
++                return e;
++            }
++            // `$(exit 3)` / `$(:)` name a BUILTIN, and an execvp of that
++            // word is a different program — there is no `/usr/bin/exit`,
++            // and `/usr/bin/printf` has its own `%b`/`\c` rules. Those stay
++            // on the shell site; an external command (`whoami`, `date`,
++            // `stat`) is named by the same argv bash would execvp.
++            if !Self::word_is_bash_builtin(&words[0]) {
++                return self.cap_site(|r, id| {
++                    r.emit_capture_argv(id, &words);
++                    r.emit("return buf;");
++                });
++            }
++        }
+         let cmd = cmd.to_string();
+         self.cap_site(|r, id| {
+             r.emit(&format!("_sh_bres(&_c{id}_cmd, &_c{id}_cap);"));
+@@ -21124,6 +21158,84 @@ fn param_copy_alias(
+         })
+     }
+ 
++    /// Does bash resolve this command word to a BUILTIN? (`compgen -b`,
++    /// plus the reserved words that can stand alone as a command.) Such a
++    /// word is NEVER safe to `execvp`: bash's `exit`, `eval`, `set`,
++    /// `shift`, `umask` and friends have no binary, and `echo`/`printf`
++    /// follow bash's own argument rules rather than coreutils'.
++    fn word_is_bash_builtin(w: &str) -> bool {
++        const BUILTINS: &[&str] = &[
++            ".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd",
++            "command", "compgen", "complete", "compopt", "continue", "declare", "dirs",
++            "disown", "echo", "enable", "eval", "exec", "exit", "export", "false", "fc",
++            "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let", "local",
++            "logout", "mapfile", "popd", "printf", "pushd", "pwd", "read", "readarray",
++            "readonly", "return", "set", "shift", "shopt", "source", "suspend", "test",
++            "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias",
++            "unset", "wait", "time", "!", "}", "{",
++        ];
++        BUILTINS.contains(&w)
++    }
++
++    /// A capture's inner text as a plain argv, when it is one simple
++    /// command made only of literal words.
++    ///
++    /// REFUSE > GUESS: any unquoted shell metacharacter (`$` backtick `|`
++    /// `&` `;` `<` `>` `(` `)` `{` `}` `[` `]` `*` `?` `~` `#` `!` `\`
++    /// `=`), a double-quoted `$`/backtick/`\`, and an unterminated quote
++    /// all return None so the caller keeps the shell site. What survives
++    /// needs no shell at all: bash builds exactly this argv and `execvp`s
++    /// it, so a forked exec of the same words is the faithful lowering.
++    fn literal_argv(text: &str) -> Option<Vec<String>> {
++        let mut words: Vec<String> = Vec::new();
++        let mut cur = String::new();
++        let mut have = false;
++        let mut chars = text.chars();
++        while let Some(c) = chars.next() {
++            match c {
++                ' ' | '\t' | '\n' => {
++                    if have {
++                        words.push(std::mem::take(&mut cur));
++                        have = false;
++                    }
++                }
++                '\'' => {
++                    have = true;
++                    loop {
++                        match chars.next()? {
++                            '\'' => break,
++                            ch => cur.push(ch),
++                        }
++                    }
++                }
++                '"' => {
++                    have = true;
++                    loop {
++                        match chars.next()? {
++                            '"' => break,
++                            '$' | '`' | '\\' => return None,
++                            ch => cur.push(ch),
++                        }
++                    }
++                }
++                '$' | '`' | '|' | '&' | ';' | '<' | '>' | '(' | ')' | '{' | '}' | '['
++                | ']' | '*' | '?' | '~' | '#' | '!' | '\\' | '=' => return None,
++                ch => {
++                    have = true;
++                    cur.push(ch);
++                }
++            }
++        }
++        if have {
++            words.push(cur);
++        }
++        if words.first().is_none_or(|w| w.is_empty()) {
++            None
++        } else {
++            Some(words)
++        }
++    }
++
+     /// An unquoted heredoc body's C value expression. The core delivers
+     /// the RAW text (`IrRedirect.target` is a plain `Str`,
+     /// `interpolate: true`) — expand it at render time via
+@@ -25251,6 +25363,35 @@ fn param_copy_alias(
+         ));
+     }
+ 
++    /// The same capture, with a real argv instead of `bash -c`: the words
++    /// go straight to `execvp`. `$(whoami)` reads the same bytes as bash's
++    /// `$(whoami)` — trailing newlines stripped, the child's status in
++    /// `rc` — because the pipeline engine below owns all of that; what
++    /// disappears is the shell that used to rebuild the argv from text.
++    ///
++    /// No `/* capture: bash -c */` marker: that marker names the line that
++    /// CONSUMES a site's `_cN_cmd` buffer, and this form has no buffer to
++    /// fold (`is_capture_terminator` must not match it).
++    fn emit_capture_argv(&mut self, id: usize, words: &[String]) {
++        self.need_sh = true;
++        let arr = format!("_ca{id}");
++        let expr = self.inline_pipeline_expr(
++            id,
++            &[StageRef::Exec(arr.clone())],
++            true,
++            "buf",
++            "buf_cap",
++        );
++        let init = words
++            .iter()
++            .map(|w| Self::cstr(w))
++            .collect::<Vec<_>>()
++            .join(", ");
++        self.emit(&format!(
++            "/* capture: argv */ {{ char *{arr}[] = {{{init}, 0}}; {expr}; }}"
++        ));
++    }
++
+     /// One lowered pipeline stage: a ready argv array to `execvp`, or the
+     /// thunk that runs a transpiled builtin (echo/printf) in the child.
+     fn inline_pipeline_expr(
+@@ -55814,3 +55955,63 @@ fn probe_parse_arith() {
+     let r = crate::shir::parse_arith("j+(100/__SHCNT_arr)");
+     println!("parse_arith j+(100/__SHCNT_arr): {:?}", r.map(|a| format!("{a:?}")));
+ }
++
++#[cfg(test)]
++mod argv_capture_tests {
++    use super::Render;
++
++    /// `$(...)` text becomes an argv ONLY when the text really is one
++    /// simple command of literal words. Every shell feature has to be
++    /// refused, because the fallback (`bash -c`) is correct for all of
++    /// them and a wrong accept would change the program's meaning.
++    #[test]
++    fn literal_argv_accepts_only_simple_literal_commands() {
++        let w = |s: &[&str]| Some(s.iter().map(|x| x.to_string()).collect::<Vec<_>>());
++        assert_eq!(Render::literal_argv("whoami"), w(&["whoami"]));
++        assert_eq!(Render::literal_argv("  uname  -s "), w(&["uname", "-s"]));
++        // quoting is removed by the shell, so the words carry the unquoted
++        // text — exactly what `execvp` must receive
++        assert_eq!(Render::literal_argv("grep -c 'a b'"), w(&["grep", "-c", "a b"]));
++        assert_eq!(
++            Render::literal_argv("printf \"%s\" x"),
++            w(&["printf", "%s", "x"])
++        );
++        for t in [
++            "echo hi | grep h",  // pipeline
++            "a && b",            // and-list
++            "cmd; cmd2",         // sequence
++            "cmd &",             // background
++            "$(x)",              // nested substitution
++            "echo $VAR",         // expansion
++            "echo `x`",          // backtick
++            "printf '%s' *.txt", // glob
++            "cat < f",           // redirect
++            "cmd > f",           // redirect
++            "echo {a,b}",        // brace expansion
++            "echo ~",            // tilde expansion
++            "FOO=1 cmd",         // env prefix
++            "echo \"$VAR\"",     // expansion inside dquotes
++            "echo \"a\\tb\"",    // escape inside dquotes
++        ] {
++            assert_eq!(Render::literal_argv(t), None, "must refuse {t:?}");
++        }
++        assert_eq!(Render::literal_argv("echo 'x"), None, "unterminated quote");
++        assert_eq!(Render::literal_argv(""), None);
++        assert_eq!(Render::literal_argv("   "), None);
++    }
++
++    /// A builtin word must never reach `execvp`: there is no
++    /// `/usr/bin/exit`, and `/usr/bin/printf` is not bash's `printf`.
++    #[test]
++    fn builtin_words_never_exec() {
++        for w in ["exit", ":", "eval", "printf", "echo", "true", "set", "read"] {
++            assert!(Render::word_is_bash_builtin(w), "{w} is a bash builtin");
++        }
++        for w in ["whoami", "date", "uname", "stat", "grep", "sed"] {
++            assert!(
++                !Render::word_is_bash_builtin(w),
++                "{w} is an external command"
++            );
++        }
++    }
++}

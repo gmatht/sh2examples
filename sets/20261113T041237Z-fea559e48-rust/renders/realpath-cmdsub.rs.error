@@ -1,0 +1,1 @@
+ShIR JSON ingress: Program.stmts[1].body[12].then[0].then[1].expr.args[0].elements[1].body[0].expr.func[builtin]: args[0] must be a builtins.json command name
