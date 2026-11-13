@@ -1,1 +1,3 @@
-# golden render record (machine state; see harness/golden-render.sh)
+# render sets are published as release assets (sets-<id>.tar.gz), not committed
+sets/**
+!sets/README.md
