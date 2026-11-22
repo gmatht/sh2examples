@@ -19,11 +19,28 @@ depends on it: a gate must never need a second clone.
   `git submodule status` fail outright.
 - `sh2perl` must never reference this record (PLAN §1.1), and `examples/`
   lives inside the `sh2perl` submodule, so nesting is ruled out as well.
-- Where it lives: `$SH2_GOLDEN_REPO`, default `.golden-inbox/` in the
-  workspace (ignored, machine state). Promote to `gmatht/sh2golden` as a
-  sibling clone once the format settles; `sets/` keeps the same layout, so no
-  history is rewritten. If a comparison later needs a fixed point, pin it by
-  commit SHA in CI — the `sh2runtime` pattern (AGENTS.md:14-15, PLAN §1.2).
+- Where it lives: **`github.com/gmatht/sh2examples`** (published 2026-11-13),
+  cloned as a sibling; `$SH2_GOLDEN_REPO` points at it, defaulting to the
+  ignored `.golden-inbox/` in the workspace for ad-hoc runs.
+- **The sets themselves are tracked files.** A round adds
+  `sets/<utc-stamp>-<sha7>-<backend>/` and its `INDEX.tsv` row in one commit,
+  so the exported text is browsable, diffable and cloneable next to the index
+  that names it. This replaced the release-asset design
+  (`sets-<round>.tar.gz`): nothing consumed the tarballs, they were opaque to
+  `git diff`, and every round that could not upload left an `INDEX.tsv` row
+  naming a set nobody could retrieve.
+- **What that costs, measured.** A full-corpus rust set is 3.4 MB across 415
+  files (~8 KB average, largest single render 17 KB); a full 16-backend round
+  is ~5–10 MB of working tree. Git is content-addressed, so an unchanged
+  render costs nothing however many round directories name it — a quiet round
+  adds only the blobs that actually changed. What grows with every round kept
+  is the **checkout**, so prune deliberately (`git rm -r sets/<old>` in a
+  normal commit; history keeps them) instead of letting the nightly job grow
+  the tree forever. The per-file 1 MiB cap in `golden-render.sh` (larger
+  renders become `oversize`) is what keeps any single blob far from GitHub's
+  100 MB limit — the failure `docs/CLEAN_GIT.md` records at 4.7 GB → 19 MB.
+- If a comparison later needs a fixed point, pin it by commit SHA in CI — the
+  `sh2runtime` pattern (AGENTS.md:14-15, PLAN §1.2).
 
 ## What a set is
 
@@ -91,3 +108,46 @@ to agree and several worktrees still lack `shir_render`.
 - Per-file cap 1 MiB (larger renders become `oversize`, not committed) and
   `golden-render.sh` never stages: text only, one commit per backend per
   round, and the record gets its own pre-commit guard.
+
+## Publishing a round (gmatht/sh2examples)
+
+```
+harness/golden-render.sh --backend rust --jobs 8     # writes a set under the record root
+cd $SH2_GOLDEN_REPO                                  # the clone of gmatht/sh2examples
+git add -A sets INDEX.tsv
+git commit -m "sets: $(date -u +%F) round"
+git push origin main
+```
+
+`INDEX.tsv` is the correlation table (backend, sh2perl sha, corpus sha,
+counts); `sets/` is the corpus itself. A set directory and its `INDEX.tsv` row
+land in the **same** commit — a row without its files is a broken reference,
+which is what the old release-asset design produced whenever the upload failed.
+
+## The nightly round (cron, 03:14)
+
+`harness/golden-nightly.sh` is installed as
+
+```
+14 3 * * * HOME=/home/john /home/john/src/sh2loop/harness/golden-nightly.sh >>/home/john/src/sh2loop/loop-golden.log 2>&1
+```
+
+(install idempotently with `harness/golden-nightly.sh --install-cron`; every
+path in the line is derived from the script itself, so it is machine state,
+not in git — re-run it if the tree moves, the same rule as
+`reap-orphan-examples.sh`.)
+
+The round needs nothing but `git`: it **commits the sets and `INDEX.tsv` and
+pushes**, which is the whole publication. There is no tarball and no release
+asset, so no `gh` and no second upload that can fail after the index landed.
+
+It takes `.golden-nightly.lock` (no two rounds, and no round racing a
+hand-run `golden-render.sh`), fast-forwards its clone of `gmatht/sh2examples`
+(refusing to publish over local commits someone made by hand), renders every
+backend `--jobs 2` (this box wedges on IO when several compiles overlap), and
+commits the round's set directories with their `INDEX.tsv` row.
+
+Trial runs: `harness/golden-nightly.sh --dry-run --backends fish --limit 3`
+(renders, publishes nothing, and restores the record clone — nothing staged
+and no set left behind, so a trial cannot feed a row for an unpublished set
+into the next real round).

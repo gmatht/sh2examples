@@ -1,3 +1,9 @@
-# render sets are published as release assets (sets-<id>.tar.gz), not committed
-sets/**
-!sets/README.md
+# The render sets ARE the record: sets/<round>-<sha7>-<backend>/ is tracked
+# file-by-file, together with its INDEX.tsv row, in a single commit. (They were
+# published as sets-<round>.tar.gz release assets until 2026-11-22; nothing
+# consumed those, and an upload that failed left an INDEX row naming a set no
+# one could retrieve.)
+#
+# Only the nightly run's transient log is ignored, so a crashed round cannot be
+# committed by accident.
+.nightly-render.log
