@@ -1,0 +1,1 @@
+otranspiler: command expression not renderable: BinOp { lhs: Arith(Var("__n")), op: Lt, rhs: Arith(Num(1000)) }

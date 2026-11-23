@@ -1,0 +1,1 @@
+otranspiler: command-chain side not representable: BinOp { lhs: BinOp { lhs: Var("i", None), op: Ne, rhs: Str("2", DoubleQuoted) }, op: Not, rhs: BinOp { lhs: Var("i", None), op: Ne, rhs: Str("2", DoubleQuoted) } }

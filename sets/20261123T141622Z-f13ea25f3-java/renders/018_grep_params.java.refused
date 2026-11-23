@@ -1,0 +1,1 @@
+otranspiler: arrow statement not representable as text: Expr(Call { func: "grepMatches", args: [Str("text with pattern in it", DoubleQuoted), Str("pattern", SingleQuoted), Str("", SingleQuoted)] })
