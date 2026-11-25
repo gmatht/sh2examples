@@ -1,0 +1,1 @@
+otranspiler: command expression not renderable: BinOp { lhs: Var("i", None), op: Ne, rhs: Str("2", DoubleQuoted) }

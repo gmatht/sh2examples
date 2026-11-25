@@ -1,0 +1,1 @@
+otranspiler: arrow statement not representable as text: Expr(Call { func: "assign", args: [Str("n", DoubleQuoted), Str("=", DoubleQuoted), Call { func: "arith", args: [Str("$1 + 0", DoubleQuoted)] }] })

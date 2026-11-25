@@ -1,0 +1,16 @@
+thread_local! { #[allow(non_upper_case_globals)] static __SHV_first_half: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) }; }
+thread_local! { #[allow(non_upper_case_globals)] static __SHV_last_half: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) }; }
+thread_local! { #[allow(non_upper_case_globals)] static __SHV_middle: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) }; }
+thread_local! { #[allow(non_upper_case_globals)] static __SHV_numbers: std::cell::RefCell<Vec<i64>> = const { std::cell::RefCell::new(Vec::new()) }; }
+
+#[allow(non_upper_case_globals)]
+fn main() -> std::process::ExitCode {
+    __SHV_numbers.with(|v| *v.borrow_mut() = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    __SHV_middle.with(|v| *v.borrow_mut() = vec![{ let __sh_value = __SHV_numbers.with(|v| v.borrow().iter().map(|n| n.to_string()).collect::<Vec<String>>()); let __sh_offset = if 3 < 0 { (__sh_value.len() as i64 + 3).max(0) } else { 3 } as usize; let __sh_offset = __sh_offset.min(__sh_value.len()); let __sh_len = if 4 < 0 { __sh_value.len() as i64 - __sh_offset as i64 } else { 4 };                          let __sh_start = __sh_offset.max(0) as usize; let __sh_stop = ((__sh_start as i64 + __sh_len).max(__sh_start as i64)).min(__sh_value.len() as i64) as usize; let __sh_stop = __sh_stop.max(__sh_start);                          __sh_value[__sh_start..__sh_stop].join(" ") }]);
+    __SHV_first_half.with(|v| *v.borrow_mut() = vec![{ let __sh_value = __SHV_numbers.with(|v| v.borrow().iter().map(|n| n.to_string()).collect::<Vec<String>>()); let __sh_offset = if 0 < 0 { (__sh_value.len() as i64 + 0).max(0) } else { 0 } as usize; let __sh_offset = __sh_offset.min(__sh_value.len()); let __sh_len = if 5 < 0 { __sh_value.len() as i64 - __sh_offset as i64 } else { 5 };                          let __sh_start = __sh_offset.max(0) as usize; let __sh_stop = ((__sh_start as i64 + __sh_len).max(__sh_start as i64)).min(__sh_value.len() as i64) as usize; let __sh_stop = __sh_stop.max(__sh_start);                          __sh_value[__sh_start..__sh_stop].join(" ") }]);
+    __SHV_last_half.with(|v| *v.borrow_mut() = vec![{ let __sh_value = __SHV_numbers.with(|v| v.borrow().iter().map(|n| n.to_string()).collect::<Vec<String>>()); let __sh_offset = if 5 < 0 { (__sh_value.len() as i64 + 5).max(0) } else { 5 } as usize; let __sh_offset = __sh_offset.min(__sh_value.len()); let __sh_len = if i64::MIN < 0 { __sh_value.len() as i64 - __sh_offset as i64 } else { i64::MIN };                          let __sh_start = __sh_offset.max(0) as usize; let __sh_stop = ((__sh_start as i64 + __sh_len).max(__sh_start as i64)).min(__sh_value.len() as i64) as usize; let __sh_stop = __sh_stop.max(__sh_start);                          __sh_value[__sh_start..__sh_stop].join(" ") }]);
+    println!("Middle: {}", __SHV_middle.with(|v| v.borrow().clone()).join(" "));
+    println!("First half: {}", __SHV_first_half.with(|v| v.borrow().clone()).join(" "));
+    println!("Last half: {}", __SHV_last_half.with(|v| v.borrow().clone()).join(" "));
+    std::process::ExitCode::SUCCESS
+}

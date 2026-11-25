@@ -1,0 +1,1 @@
+otranspiler: command expression not renderable: BinOp { lhs: Arith(Ident("num")), op: Gt, rhs: Arith(Num(3)) }
