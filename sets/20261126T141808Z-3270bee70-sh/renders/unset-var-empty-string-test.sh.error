@@ -1,0 +1,1 @@
+shir_render: sh: command expression not renderable: BinOp { lhs: Var("never_set2", None), op: Ne, rhs: Str("", DoubleQuoted) }

@@ -1,0 +1,125 @@
+use std::sync::atomic::Ordering;
+
+static __SH_RC: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+static __SH_OUT: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
+thread_local! { static __SH_OUTFILE_TL: std::cell::RefCell<Option<std::fs::File>> = const { std::cell::RefCell::new(None) }; }
+static __SH_STDIN: std::sync::Mutex<Option<Box<dyn std::io::Read + Send>>> = std::sync::Mutex::new(None);
+static __SH_STDIN_PATH: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+static __SH_PIPESTATUS: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
+
+static __SH_ARITH_WORD_FAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+thread_local! { #[allow(non_upper_case_globals)] static __SHV_info: std::cell::RefCell<std::collections::BTreeMap<String, String>> = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) }; }
+thread_local! { #[allow(non_upper_case_globals)] static __SHV_key: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
+
+fn __sh_print_words(ws: &[Vec<String>], nl: bool, _esc: bool) {
+    if __SH_ARITH_WORD_FAIL.swap(false, Ordering::Relaxed) { return; }
+    let mut s = ws.iter().flatten().map(String::as_str).collect::<Vec<_>>().join(" ");
+    if nl { s.push('\n'); }
+    __sh_sink(s.as_bytes());
+}
+
+fn __sh_capture_rc_argv(argv: &[&str]) -> (String, i32) {
+    if argv.is_empty() { return (String::new(), 0); }
+    let mut c = std::process::Command::new(argv[0]);
+    c.args(&argv[1..]);
+    c.stdout(std::process::Stdio::piped());
+    c.stdin(std::process::Stdio::inherit());
+    let Ok(mut ch) = c.spawn() else { return (String::new(), 1) };
+    let mut out = Vec::new();
+    if let Some(mut so) = ch.stdout.take() {
+        let _ = std::io::Read::read_to_end(&mut so, &mut out);
+    }
+    let rc = ch.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
+    let mut s = String::from_utf8_lossy(&out).to_string();
+    while s.ends_with('\n') { s.pop(); }
+    (s, rc)
+}
+
+fn __sh_spawn_argv(argv: &[&str], input: Option<&[u8]>) -> i32 {
+    if argv.is_empty() { return 0; }
+    let mut input = input.map(|d| d.to_vec());
+    let stdin_path = __SH_STDIN_PATH.lock().unwrap().clone();
+    if input.is_none() && stdin_path.is_none() {
+        if let Some(mut r) = __SH_STDIN.lock().unwrap().take() {
+            let mut d = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut r, &mut d);
+            input = Some(d);
+        }
+    }
+    let want_out = __SH_OUT.lock().unwrap().is_some() || __SH_OUTFILE_TL.with(|v| v.borrow().is_some());
+    let mut c = std::process::Command::new(argv[0]);
+    c.args(&argv[1..]);
+    if !want_out {
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    }
+    if want_out { c.stdout(std::process::Stdio::piped()); }
+    if input.is_none() {
+        if let Some(p) = &stdin_path {
+            if let Ok(f) = std::fs::File::open(p) {
+                c.stdin(std::process::Stdio::from(f));
+            }
+        }
+    }
+    if input.is_some() { c.stdin(std::process::Stdio::piped()); }
+    let Ok(mut ch) = c.spawn() else { return 1 };
+    if let Some(data) = input {
+        if let Some(mut si) = ch.stdin.take() { let _ = std::io::Write::write_all(&mut si, &data); }
+    }
+    let mut out = Vec::new();
+    if let Some(mut so) = ch.stdout.take() {
+        let _ = std::io::Read::read_to_end(&mut so, &mut out);
+    }
+    let rc = ch.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
+    if !out.is_empty() { __sh_sink(&out); }
+    rc
+}
+
+fn __sh_sink(b: &[u8]) {
+    let mut used = false;
+    __SH_OUTFILE_TL.with(|v| { if let Some(f) = v.borrow_mut().as_mut() { let _ = std::io::Write::write_all(f, b); used = true; } });
+    if used { return; }
+    if let Some(o) = __SH_OUT.lock().unwrap().as_mut() { o.extend_from_slice(b); return; }
+    let _ = std::io::Write::write_all(&mut std::io::stdout(), b);
+}
+
+fn main() -> std::process::ExitCode {
+    get_system_info();
+    std::process::ExitCode::from(__SH_RC.load(Ordering::Relaxed) as u8)
+}
+
+#[allow(dead_code)]
+fn get_system_info() {
+    let __sh_loc_info: std::cell::RefCell<Option<std::collections::BTreeMap<String, String>>> = std::cell::RefCell::new(None);
+    __SH_RC.store(0, Ordering::Relaxed);
+    __SHV_info.with(|v| { v.borrow_mut().insert("os".to_string(), { let (__sh_ch, __sh_res) = __sh_capture_rc_argv(&["uname", "-s"]); __SH_RC.store(__sh_res, Ordering::Relaxed); __sh_ch }); });
+    __SHV_info.with(|v| { v.borrow_mut().insert("arch".to_string(), { let (__sh_ch, __sh_res) = __sh_capture_rc_argv(&["uname", "-m"]); __SH_RC.store(__sh_res, Ordering::Relaxed); __sh_ch }); });
+    __SHV_info.with(|v| { v.borrow_mut().insert("hostname".to_string(), { let (__sh_ch, __sh_res) = __sh_capture_rc_argv(&["hostname"]); __SH_RC.store(__sh_res, Ordering::Relaxed); __sh_ch }); });
+    __SHV_info.with(|v| { v.borrow_mut().insert("user".to_string(), std::env::var("USER").unwrap_or_default()); });
+    __SH_RC.store(0, Ordering::Relaxed);
+    let mut __sh_pbuf4: Vec<u8> = Vec::new();
+    __SH_PIPESTATUS.lock().unwrap().clear();
+    {
+    let __sh_oldout5 = __SH_OUTFILE_TL.with(|v| v.borrow_mut().take());
+    let __sh_savedout = __SH_OUT.lock().unwrap().take();
+    *__SH_OUT.lock().unwrap() = Some(Vec::new());
+    let __sh_items6 = __SHV_info.with(|v| v.borrow().keys().cloned().collect::<Vec<String>>());
+    let mut __sh_index7: usize = 0;
+    loop {
+    if !(__sh_index7 < __sh_items6.len()) { break; }
+        __SHV_key.with(|v| *v.borrow_mut() = __sh_items6[__sh_index7].clone());
+        __sh_print_words(&[vec![format!("info[{}]={}", __SHV_key.with(|v| v.borrow().clone()), __SHV_info.with(|v| v.borrow().get(&__SHV_key.with(|v| v.borrow().clone())).cloned().unwrap_or_default()))]], true, false);
+        __SH_RC.store(0, Ordering::Relaxed);
+    __sh_index7 += 1;
+    }
+    __sh_pbuf4 = __SH_OUT.lock().unwrap().take().unwrap();
+    *__SH_OUT.lock().unwrap() = __sh_savedout;
+    __SH_OUTFILE_TL.with(|v| *v.borrow_mut() = __sh_oldout5);
+    __SH_PIPESTATUS.lock().unwrap().push(__SH_RC.load(Ordering::Relaxed));
+}
+    __SH_RC.store(__sh_spawn_argv(&["sort"], Some(&__sh_pbuf4)), Ordering::Relaxed);
+    __SH_PIPESTATUS.lock().unwrap().push(__SH_RC.load(Ordering::Relaxed));
+    match __sh_loc_info.take() { Some(__sh_loc) => { __SHV_info.with(|v| *v.borrow_mut() = __sh_loc); } _ => {} };
+}

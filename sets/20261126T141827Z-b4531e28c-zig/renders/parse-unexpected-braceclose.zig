@@ -1,0 +1,14 @@
+const std = @import("std");
+
+pub fn main(init: std.process.Init) !void {
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_file_writer: std.Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);
+    const stdout = &stdout_file_writer.interface;
+
+    try stdout.print("{s}\n", .{"hello"});
+    try stdout.flush();
+    // TODO(unsupported): stmt Warn { expr: Str("syntax error near unexpected token `}'", SingleQuoted), carp: false }
+    std.process.exit(@intCast(2));
+}
+// 1 construct(s) lowered to TODO markers

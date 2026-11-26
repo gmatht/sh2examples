@@ -1,0 +1,1 @@
+otranspiler: arrow statement not representable as text: WriteFile { path: Str("/tmp/parse_error_block_test", DoubleQuoted), content: Str("", DoubleQuoted), append: true }

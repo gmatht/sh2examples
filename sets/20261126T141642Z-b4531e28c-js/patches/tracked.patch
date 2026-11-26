@@ -1,0 +1,7 @@
+diff --git a/backends/sh b/backends/sh
+index a2debd4f7..3270bee70 160000
+--- a/backends/sh
++++ b/backends/sh
+@@ -1 +1 @@
+-Subproject commit a2debd4f799c14669abde8294c104c50f742693b
++Subproject commit 3270bee705a5cd78cac6209a14110f8838283dd0-dirty

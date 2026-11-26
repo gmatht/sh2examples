@@ -1,0 +1,1 @@
+shir_render: sh: command expression not renderable: BinOp { lhs: Arith(Var("uid")), op: Gt, rhs: Arith(Num(1000)) }

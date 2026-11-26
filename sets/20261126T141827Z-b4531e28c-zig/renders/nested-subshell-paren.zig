@@ -1,0 +1,58 @@
+const std = @import("std");
+
+// sh2.* runtime helpers — TODO: implement (harness/sh2-namespace.json)
+fn sh2TODO(name: []const u8) noreturn {
+    std.debug.print("TODO sh2.{s}\n", .{name});
+    std.process.exit(2);
+}
+
+var sh2_io: ?std.Io = null;
+
+fn sh2Run(argv: []const []const u8) []const u8 {
+    const io = sh2_io orelse return "";
+    const result = std.process.run(std.heap.page_allocator, io, .{
+        .argv = argv,
+        .stdout_limit = .limited(1 << 20),
+    }) catch return "";
+    return std.mem.trimEnd(u8, result.stdout, "\n");
+}
+
+fn sh2Capture() []const u8 {
+    sh2TODO("capture");
+    return "";
+}
+
+fn sh2Pipeline() []const u8 {
+    sh2TODO("pipeline");
+    return "";
+}
+
+pub fn main(init: std.process.Init) !void {
+
+    var d: []const u8 = "";
+    var file1: []const u8 = "";
+    var file2: []const u8 = "";
+    var result: []const u8 = "";
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_file_writer: std.Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);
+    const stdout = &stdout_file_writer.interface;
+    sh2_io = init.io;
+
+    d = sh2Capture(); // line 3
+    // TODO(unsupported): pipeline → sh2.pipeline // line 4
+    // TODO(unsupported): pipeline → sh2.pipeline
+    _ = sh2Pipeline();
+    // TODO(unsupported): pipeline → sh2.pipeline // line 5
+    // TODO(unsupported): pipeline → sh2.pipeline
+    _ = sh2Pipeline();
+    file1 = std.fmt.allocPrint(std.heap.page_allocator, "{s}/f1", .{d}) catch ""; // line 6
+    file2 = std.fmt.allocPrint(std.heap.page_allocator, "{s}/f2", .{d}) catch ""; // line 6
+    result = sh2Capture(); // line 7
+    try stdout.print("{s}\n", .{result});
+    try stdout.flush(); // line 13
+    _ = sh2Run(&[_][]const u8{"rm", "-r", "-f", d}); // line 14
+    _ = &file1;
+    _ = &file2;
+}
+// 4 construct(s) lowered to TODO markers

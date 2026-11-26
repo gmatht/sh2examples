@@ -1,0 +1,6 @@
+fn main() -> std::process::ExitCode {
+    print!("Multi-stage:\n");
+    println!("{}", { let __sh_text: String = { let __sh_text: String = { let __sh_from_set: Vec<char> = " ".chars().collect(); let __sh_to_set: Vec<char> = "\n".chars().collect(); "hello world".to_string().chars().map(|__sh_ch| match __sh_from_set.iter().position(|&__sh_from_ch| __sh_from_ch == __sh_ch) { Some(__sh_begin) => __sh_to_set[__sh_begin.min(__sh_to_set.len() - 1)], None => __sh_ch }).collect::<String>() }; let mut __sh_lines: Vec<String> = if __sh_text.is_empty() { Vec::new() } else { let mut __sh_collected: Vec<String> = __sh_text.split('\n').map(|__sh_line| __sh_line.to_string()).collect(); if __sh_text.ends_with('\n') { __sh_collected.pop(); } __sh_collected }; let __sort_key = |__sh_line: &String| -> String { __sh_line.clone() }; __sh_lines.sort_by(|__sh_left, __sh_right| __sort_key(__sh_left).cmp(&__sort_key(__sh_right)));  __sh_lines.join("\n") }; let __sh_num: i64 = 2; let __sh_lines: Vec<&str> = __sh_text.split('\n').collect(); let __sh_count = __sh_lines.len(); if __sh_num <= 0 { String::new() } else { let __sh_stop = (__sh_num as usize).min(__sh_count); __sh_lines[..__sh_stop].join("\n") } });
+    print!("done\n");
+    std::process::ExitCode::SUCCESS
+}

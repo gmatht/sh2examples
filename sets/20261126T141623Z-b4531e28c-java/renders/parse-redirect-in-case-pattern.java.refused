@@ -1,0 +1,1 @@
+otranspiler: expr not in the java subset (str ctx): Call { func: "fnValue", args: [Str("_docker_to_extglob", DoubleQuoted), Array([Call { func: "getVar", args: [Str("subcommands", DoubleQuoted)] }])] }

@@ -1,0 +1,1 @@
+otranspiler: expr not in the java subset (str ctx): Call { func: "fnValue", args: [Str("greet", DoubleQuoted), Array([Str("World", DoubleQuoted)])] }

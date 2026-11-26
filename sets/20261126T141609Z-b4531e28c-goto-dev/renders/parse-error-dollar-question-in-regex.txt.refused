@@ -1,0 +1,1 @@
+DEBUG: String interpolation parsed command 'grep -E "^Exec(\[[^]=]*])?=" "$file"' as 1 commands
