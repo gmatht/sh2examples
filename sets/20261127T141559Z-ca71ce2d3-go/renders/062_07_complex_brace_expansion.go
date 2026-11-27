@@ -1,0 +1,17 @@
+package main
+
+import (
+    "fmt"
+)
+
+func main() {
+    var st int64
+
+    fmt.Println("Testing complex brace expansion...");
+    st = 0;
+    fmt.Println("a1x a1y a1z a2x a2y a2z a3x a3y a3z b1x b1y b1z b2x b2y b2z b3x b3y b3z c1x c1y c1z c2x c2y c2z c3x c3y c3z");
+    st = 0;
+    fmt.Println(fmt.Sprintf("exit: %v", st)); // line 7
+    st = 0;
+    return;
+}

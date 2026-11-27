@@ -1,0 +1,1 @@
+shir_render: sh: command expression not renderable: BinOp { lhs: Arith(Num(1)), op: Lt, rhs: Arith(Bin { op: "+", lhs: Index { var: "a", key: Num(1) }, rhs: Index { var: "a", key: Num(2) } }) }

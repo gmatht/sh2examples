@@ -1,0 +1,1 @@
+otranspiler: arrow statement not representable as text: Output { value: Str("c\na\nb\n", DoubleQuoted), newline: false, target: None }

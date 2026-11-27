@@ -1,0 +1,30 @@
+const std = @import("std");
+
+// sh2.* runtime helpers — TODO: implement (harness/sh2-namespace.json)
+fn sh2TODO(name: []const u8) noreturn {
+    std.debug.print("TODO sh2.{s}\n", .{name});
+    std.process.exit(2);
+}
+
+fn sh2Capture() []const u8 {
+    sh2TODO("capture");
+    return "";
+}
+
+pub fn main(init: std.process.Init) !void {
+
+    var greeting: []const u8 = "";
+    var x: []const u8 = "";
+
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_file_writer: std.Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);
+    const stdout = &stdout_file_writer.interface;
+
+    greeting = "hi";
+    x = sh2Capture(); // line 8
+    try stdout.print("{s}\n", .{x});
+    try stdout.flush(); // line 9
+    try stdout.print("{s}{s}", .{x, "\n"});
+    try stdout.flush(); // line 10
+    _ = &greeting;
+}

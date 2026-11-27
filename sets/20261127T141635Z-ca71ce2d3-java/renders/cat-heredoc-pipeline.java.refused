@@ -1,0 +1,1 @@
+otranspiler: arrow statement not representable as text: Subshell([Expr(Call { func: "redirect", args: [Arrow([Expr(Call { func: "exec", args: [Str("cat", DoubleQuoted), Array([])] })]), Array([Object([("fd", Int(0)), ("mode", Str("heredoc", DoubleQuoted)), ("target", Str("hello world\n", DoubleQuoted)), ("interpolate", Bool(true))])])] })])

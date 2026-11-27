@@ -1,0 +1,2310 @@
+diff --git a/docs/backend-rust-core-needs.md b/docs/backend-rust-core-needs.md
+index ccea58991..8bf239b00 100644
+--- a/docs/backend-rust-core-needs.md
++++ b/docs/backend-rust-core-needs.md
+@@ -434,11 +434,23 @@ with the reason per name.
+   byte-for-byte or the gate names the fixture and the first differing line;
+   `rustc -D warnings` in debug *and* `-O`; behaviour vs `bash` in both
+   profiles; **clippy `-D warnings` in debug *and* `-O`**, which must be
+-  EMPTY; and the **idiom metric**: every `clippy::*` diagnostic the `pedantic`
+-  group raises over the generated program, counted by lint name and ratcheted
+-  against the measured `IDIOM_BASELINE` — **66 findings in 14 families** on
+-  this tree, and a family that grows or is not in the baseline fails the gate
+-  and prints every `fixture:line: message`. Nothing is a hand-written pattern
++  EMPTY — the invocation is `-W clippy::pedantic -A <UNAVOIDABLE_PEDANTIC>
++  -D warnings`, so a PEDANTIC finding is a hard failure, and `rust_fuzz` runs
++  the same check over every generated program in both profiles (a
++  `clippy_fail` is a failure, never "the metric's job"); and the **idiom
++  metric**: every `clippy::*` diagnostic the `pedantic` group raises over the
++  generated program, counted by lint name and ratcheted against the measured
++  `IDIOM_BASELINE` — **5 findings in ONE family** on this tree, and a family
++  that grows or is not in the baseline fails the gate and prints every
++  `fixture:line: message`. The single suppressed lint is
++  `clippy::too_many_lines`, and the decision is recorded once, in
++  `rust_backend::UNAVOIDABLE_PEDANTIC`: an emitted `fn` is as long as the
++  script it came from (`22_vars_store`'s `main` is 332 lines, the ERE matcher
++  142, `__sh_printf` 109), and shortening it needs a body-chunking emission
++  architecture (per-block functions with an explicit continuation) that
++  `let` scoping, `break`/`return` targets, `'unwind` blocks and redirect
++  guards would not survive. Nothing else is `-A`'d, no `#[allow(` is
++  emitted, and the metric still counts that lint. Nothing is a hand-written pattern
+   list, so an idiom nobody classified is measured by the same number:
+   `clippy::bool_to_int_with_if` (43) and
+   `clippy::redundant_closure_for_method_calls` (118) only appeared when the
+@@ -447,8 +459,17 @@ with the reason per name.
+   paths instead of `|e| e.into_inner()` / `|x| x.to_string()` closures — took
+   the score 243 → 82, and the `inline_format_args` pass (a bare identifier
+   moves into its `{}` placeholder) took `uninlined_format_args` 26 → 10, so the
+-  tree measures 66; `clippy::many_single_char_names` (11) is still an
+-  emitted-name finding nobody predicted. The targeted
++  tree measured 66 at that point. The hard gate then drove the remaining
++  thirteen families to zero in the emitter: a long literal is emitted
++  `2_000_000_000`, a spawn becomes `let Ok(mut ch) = c.spawn() else { … }`,
++  `map_or(1, …)` replaces `map(…).unwrap_or(1)`, the loop status store is
++  `if ran { last } else { 0 }`, a non-empty test is the named predicate
++  `__sh_nonempty`, `write!` replaces `push_str(&format!(…))`,
++  `__sh_v_set_s` takes `impl Into<String>`, helper bindings are named rather
++  than single letters, and `i64::try_from(…)` replaces the `as i64`/`as usize`
++  casts. The metric also caught a real defect on the way: `inline_format_args`
++  treated the CHAR literal `'"'` in an emitted escape helper as the start of a
++  string and silently stopped inlining everything after that line. The targeted
+   assertions survive as hard failures — zero `#[allow(`, zero
+   `.unwrap()`/`.expect(`/`panic!`/`unreachable!`, zero per-variable store
+   static) plus the
+diff --git a/fixtures/rust_idiom/README.md b/fixtures/rust_idiom/README.md
+index 8d9a008bb..cba4a90d3 100644
+--- a/fixtures/rust_idiom/README.md
++++ b/fixtures/rust_idiom/README.md
+@@ -73,10 +73,14 @@ Re-render after a backend change, then look at the diff:
+    `char::to_lowercase` / `<[u8]>::to_vec` as paths instead of closures), which
+    took the score to 82, and a final pass that moves a bare identifier into its
+    `{}` placeholder (`format!("hi {}", who)` → `format!("hi {who}")`, in
+-   `inline_format_args`) took `uninlined_format_args` 26 → 10: the score is now
+-   **66 findings in 14 families**. What is left is mostly
+-   `clippy::many_single_char_names` (11) and `clippy::cast_sign_loss` (10) —
+-   clippy's observations about the rendered text, not ours.
++   `inline_format_args`) took `uninlined_format_args` 26 → 10. The hard
++   `-D warnings` gate (next section) then forced the rest out — the last
++   families were `manual_let_else`, `single_match_else`, `map_unwrap_or`,
++   `if_not_else`, `format_push_string`, `needless_pass_by_value`,
++   `explicit_iter_loop`, `match_same_arms`, `many_single_char_names`,
++   `unreadable_literal` and the two `cast` lints — so the score is now
++   **5 findings in ONE family** (`clippy::too_many_lines`), which is the only
++   lint the gate suppresses and the only one it may.
+    `cargo run --bin rust_fixtures -- --idiom-only` runs the
+    render, census, metric and mirror check without the rustc/behaviour passes.
+ 
+@@ -359,8 +363,8 @@ struct __ShVal   { s: String, int: Option<i64>, words: Option<Vec<Word>>,
+ Measured over the fixture set (before = `5a41d43a0`, after = this tree):
+ per-variable `static __SHV_…` **6 → 0**; programs carrying the store: **7**
+ (one `__SH_VARS` each, `05`, `13`, `14`, `15`, `18`, `21`, `22`); store call
+-sites naming a key **21 → 89**; emitted lines over all 22 fixtures **3528**
+-(`22_vars_store` alone: 775 lines, 65 store call sites; the 57 lines over the
++sites naming a key **21 → 89**; emitted lines over all 22 fixtures **3546**
++(`22_vars_store` alone: 779 lines, 65 store call sites; the 75 lines over the
+ pre-arithmetic-helpers 3471 are the wrapping helpers `17_overflow` and the
+ other arithmetic fixtures now call). The store helper costs
+ ~200 lines per program that uses it — the location plumbing
+@@ -517,11 +521,11 @@ the emitted file). From `cargo run --bin rust_fixtures`:
+ | fixture | lines | pfx | pfi | pfl |
+ |---|---|---|---|---|
+ | 07_redirect | 46 | 1 | 0 | 0 |
+-| 19_printf_literal | 33 | 4 | 0 | 0 |
+-| 20_printf_dynamic | 237 | 0 | 1 | 114 |
+-| 21_pipeline_interleave | 729 | 4 | 4 | 114 |
++| 19_printf_literal | 43 | 4 | 0 | 0 |
++| 20_printf_dynamic | 244 | 0 | 1 | 110 |
++| 21_pipeline_interleave | 726 | 4 | 4 | 110 |
+ | the other 18 fixtures | — | 0 | 0 | 0 |
+-| **TOTAL (22 fixtures)** | **3528** | **9** | **5** | **228** |
++| **TOTAL (22 fixtures)** | **3546** | **9** | **5** | **220** |
+ 
+ Before/after, measured rather than remembered:
+ 
+@@ -646,6 +650,45 @@ nothing but that shape. `rust_fuzz` compiles those programs with
+ `-D warnings` in debug and `-O`, so a non-zero rustc exit is a failure — the
+ reverse of avoiding the shape.
+ 
++## clippy `-D warnings` is a gate, not a metric
++
++Two clippy runs with two different jobs:
++
++| run | flags | job |
++|---|---|---|
++| the metric | `-W clippy::pedantic` | counts every pedantic finding by lint name and ratchets it (`IDIOM_BASELINE`) |
++| the gate | `-W clippy::pedantic -A <UNAVOIDABLE_PEDANTIC> -D warnings` | **fails the fixture** on any finding outside that list, in debug *and* `-O`; `rust_fuzz` runs the same check over every generated program in both profiles |
++
++The exclusion list is ONE constant, `rust_backend::UNAVOIDABLE_PEDANTIC`, with
++ONE entry: `clippy::too_many_lines` — an emitted `fn` is exactly as long as the
++script it came from (`22_vars_store`'s `main` is 332 lines, the native ERE
++matcher 142, `__sh_printf` 109), and shortening it means chunking a
++straight-line body into synthetic sub-functions, which cannot preserve `let`
++scoping, `break`/`return` targets, `'unwind` blocks or redirect guards. Nothing
++else is suppressed anywhere, no `#[allow(` is emitted, and the metric keeps
++counting that lint, so the number is not narrowed either. What each family the
++gate caught was fixed by, in the emitter:
++
++| finding | emitted fix |
++|---|---|
++| `unreadable_literal` | `group_digits`: a long literal is emitted `2_000_000_000` / `9_223_372_036_854_775_807i64` |
++| `manual_let_else`, `single_match_else` | `let Ok(mut ch) = process.spawn() else { … };` instead of `let mut ch = match …` |
++| `map_unwrap_or` | `ch.wait().map_or(1, \|s\| s.code().unwrap_or(1))` |
++| `if_not_else` | the loop status store is `if ran { last } else { 0 }`; a non-empty test is the named predicate `__sh_nonempty` |
++| `format_push_string` | `let _ = write!(body, "\\x{:02x}", c)` with a function-local `use std::fmt::Write as _;` |
++| `needless_pass_by_value` | `fn __sh_v_set_s(name: &str, v: impl Into<String>)` — the value is consumed |
++| `explicit_iter_loop` | `for ch in &mut children` |
++| `match_same_arms` | `Ok(0) \| Err(_) => break,` |
++| `many_single_char_names` | helper bindings are named (`text`, `idx`, `kont`, `chars`, `out`), not `s`/`i`/`k`/`c` |
++| `cast_sign_loss`, `cast_possible_wrap` | `i64::try_from(len).unwrap_or(i64::MAX)` / `usize::try_from(p).unwrap_or(0)` instead of `as` |
++| `uninlined_format_args` | `format!("{fv:.p2$}")`, `format!("{piece}{}", …)`, plus the scanner fix below |
++
++The last one is the kind of defect the gate exists to find: `inline_format_args`
++met a CHAR literal (`'"'`) in an emitted escape helper, treated it as the start
++of a string, and silently stopped inlining anywhere after that line — 21's
++pipeline stage format and 22's loop-status formats had been left uninlined for
++that reason, not by choice. The scanner now skips char literals.
++
+ ## What each fixture pins
+ 
+ | fixture | shape |
+diff --git a/fixtures/rust_idiom/expected/02_regex.rs b/fixtures/rust_idiom/expected/02_regex.rs
+index 495664d75..f9544bbbe 100644
+--- a/fixtures/rust_idiom/expected/02_regex.rs
++++ b/fixtures/rust_idiom/expected/02_regex.rs
+@@ -85,28 +85,28 @@ fn __sh_re_ere(text: &str, pat: &str, ci: bool) -> bool {
+ 
+     fn cat(v: &[N], t: &[char], i: usize, k: &mut dyn FnMut(usize) -> bool) -> bool {
+         let Some((head, rest)) = v.split_first() else { return k(i); };
+-        m(head, t, i, &mut |j| cat(rest, t, j, &mut *k))
++        m(head, t, i, &mut |after| cat(rest, t, after, &mut *k))
+     }
+ 
+     fn m(n: &N, t: &[char], i: usize, k: &mut dyn FnMut(usize) -> bool) -> bool {
+         match n {
+-            N::Chr(c) => i < t.len() && t[i] == *c && k(i + 1),
++            N::Chr(ch) => i < t.len() && t[i] == *ch && k(i + 1),
+             N::Any => i < t.len() && k(i + 1),
+             N::Bol => i == 0 && k(i),
+             N::Eol => i == t.len() && k(i),
+             N::Cls(neg, rs) => {
+                 if i >= t.len() { return false; }
+-                let c = t[i];
++                let ch = t[i];
+                 let mut hit = false;
+                 for (lo, hi) in rs {
+-                    if c >= *lo && c <= *hi { hit = true; }
++                    if ch >= *lo && ch <= *hi { hit = true; }
+                 }
+                 (hit != *neg) && k(i + 1)
+             }
+-            N::Cat(v) => cat(v, t, i, k),
+-            N::Alt(v) => {
+-                for a in v {
+-                    if m(a, t, i, &mut *k) { return true; }
++            N::Cat(seq) => cat(seq, t, i, k),
++            N::Alt(seq) => {
++                for alt in seq {
++                    if m(alt, t, i, &mut *k) { return true; }
+                 }
+                 false
+             }
+@@ -115,12 +115,12 @@ fn __sh_re_ere(text: &str, pat: &str, ci: bool) -> bool {
+                 let mut cur = i;
+                 while pos.len() - 1 < *max {
+                     let mut next: Option<usize> = None;
+-                    m(inner, t, cur, &mut |j| {
+-                        if j > cur && next.is_none() { next = Some(j); }
++                    m(inner, t, cur, &mut |after| {
++                        if after > cur && next.is_none() { next = Some(after); }
+                         false
+                     });
+                     match next {
+-                        Some(j) => { pos.push(j); cur = j; }
++                        Some(step) => { pos.push(step); cur = step; }
+                         None => break,
+                     }
+                 }
+diff --git a/fixtures/rust_idiom/expected/03_capture.rs b/fixtures/rust_idiom/expected/03_capture.rs
+index a79fb69db..863fab1e0 100644
+--- a/fixtures/rust_idiom/expected/03_capture.rs
++++ b/fixtures/rust_idiom/expected/03_capture.rs
+@@ -88,7 +88,7 @@ fn __sh_pipe<W: AsRef<str>>(stages: &[&[W]], input: Option<&[u8]>, sink: Option<
+             c.stdin(std::process::Stdio::from(p));
+         }
+         if i < last || sink.is_some() || want_out { c.stdout(std::process::Stdio::piped()); }
+-        let mut ch = match c.spawn() { Ok(x) => x, Err(_) => { spawn_err = true; break; } };
++        let Ok(mut ch) = c.spawn() else { spawn_err = true; break; };
+         if i == 0 {
+             if let Some(data) = input.take() {
+                 if let Some(mut si) = ch.stdin.take() { let _ = std::io::Write::write_all(&mut si, &data); }
+@@ -108,8 +108,8 @@ fn __sh_pipe<W: AsRef<str>>(stages: &[&[W]], input: Option<&[u8]>, sink: Option<
+     // bash gives PIPESTATUS one entry per stage; the last stage's status is
+     // the pipeline's `$?`
+     let mut statuses: Vec<i32> = Vec::new();
+-    for ch in children.iter_mut() {
+-        statuses.push(ch.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1));
++    for ch in &mut children {
++        statuses.push(ch.wait().map_or(1, |s| s.code().unwrap_or(1)));
+     }
+     {
+         let mut ps = __SH_PIPESTATUS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+diff --git a/fixtures/rust_idiom/expected/05_array.rs b/fixtures/rust_idiom/expected/05_array.rs
+index 79084b19f..93b858536 100644
+--- a/fixtures/rust_idiom/expected/05_array.rs
++++ b/fixtures/rust_idiom/expected/05_array.rs
+@@ -230,10 +230,10 @@ fn __sh_vw_w<R>(name: &str, f: impl FnOnce(&std::cell::RefCell<Vec<Word>>) -> R)
+ fn __sh_v_len(name: &str) -> i64 {
+     match __sh_v_get(name) {
+         Some(v) => {
+-            if let Some(w) = &v.val.words { return w.len() as i64; }
+-            if let Some(n) = &v.val.ints { return n.len() as i64; }
+-            if let Some(m) = &v.val.assoc { return m.len() as i64; }
+-            v.val.text().len() as i64
++            if let Some(w) = &v.val.words { return i64::try_from(w.len()).unwrap_or(i64::MAX); }
++            if let Some(n) = &v.val.ints { return i64::try_from(n.len()).unwrap_or(i64::MAX); }
++            if let Some(m) = &v.val.assoc { return i64::try_from(m.len()).unwrap_or(i64::MAX); }
++            i64::try_from(v.val.text().chars().count()).unwrap_or(i64::MAX)
+         }
+         None => 0,
+     }
+diff --git a/fixtures/rust_idiom/expected/08_bigint.rs b/fixtures/rust_idiom/expected/08_bigint.rs
+index 09b110432..de0eebc27 100644
+--- a/fixtures/rust_idiom/expected/08_bigint.rs
++++ b/fixtures/rust_idiom/expected/08_bigint.rs
+@@ -4,6 +4,6 @@ static __SH_RC: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new
+ static __SH_ARITH_ERR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+ 
+ fn main() {
+-    let big = { let __v = (num_bigint::BigInt::from(9223372036854775807i64) + num_bigint::BigInt::from(1i64)).to_string(); let __e = __SH_ARITH_ERR.swap(false, Ordering::SeqCst); __SH_RC.store(i32::from(__e), Ordering::SeqCst); if __e { String::new() } else { __v } };
++    let big = { let __v = (num_bigint::BigInt::from(9_223_372_036_854_775_807i64) + num_bigint::BigInt::from(1i64)).to_string(); let __e = __SH_ARITH_ERR.swap(false, Ordering::SeqCst); __SH_RC.store(i32::from(__e), Ordering::SeqCst); if __e { String::new() } else { __v } };
+     println!("{big}");
+ }
+\ No newline at end of file
+diff --git a/fixtures/rust_idiom/expected/15_export_poison.rs b/fixtures/rust_idiom/expected/15_export_poison.rs
+index f54482bbb..fab4182e1 100644
+--- a/fixtures/rust_idiom/expected/15_export_poison.rs
++++ b/fixtures/rust_idiom/expected/15_export_poison.rs
+@@ -222,8 +222,8 @@ fn __sh_vw_i<R>(name: &str, f: impl FnOnce(&std::cell::Cell<i64>) -> R) -> R {
+ fn __sh_v_s(name: &str) -> String {
+     match __sh_v_get(name) { Some(v) => v.val.text(), None => String::new() }
+ }
+-fn __sh_v_set_s<T: ToString>(name: &str, v: T) {
+-    __sh_v_put(name, __ShVal { s: v.to_string(), ..__ShVal::default() });
++fn __sh_v_set_s(name: &str, v: impl Into<String>) {
++    __sh_v_put(name, __ShVal { s: v.into(), ..__ShVal::default() });
+ }
+ fn __sh_vw_s<R>(name: &str, f: impl FnOnce(&std::cell::RefCell<String>) -> R) -> R {
+     let tmp = std::cell::RefCell::new(__sh_v_s(name));
+diff --git a/fixtures/rust_idiom/expected/17_overflow.rs b/fixtures/rust_idiom/expected/17_overflow.rs
+index 06b9b6e9c..51bcf103d 100644
+--- a/fixtures/rust_idiom/expected/17_overflow.rs
++++ b/fixtures/rust_idiom/expected/17_overflow.rs
+@@ -27,7 +27,7 @@ fn main() {
+     let mut a: i64 = 0;
+     let mut i: i64 = 0;
+     while { let __b = i < 2; __SH_RC.store(i32::from(!__b), Ordering::SeqCst); __b } {
+-        a = __sh_add(a, 2000000000);
++        a = __sh_add(a, 2_000_000_000);
+         i = __sh_add(i, 1);
+     }
+     let b: i64 = __sh_mul(a, a);
+diff --git a/fixtures/rust_idiom/expected/18_eval_poison.rs b/fixtures/rust_idiom/expected/18_eval_poison.rs
+index 2241085b8..92446e4f2 100644
+--- a/fixtures/rust_idiom/expected/18_eval_poison.rs
++++ b/fixtures/rust_idiom/expected/18_eval_poison.rs
+@@ -222,8 +222,8 @@ fn __sh_vw_i<R>(name: &str, f: impl FnOnce(&std::cell::Cell<i64>) -> R) -> R {
+ fn __sh_v_s(name: &str) -> String {
+     match __sh_v_get(name) { Some(v) => v.val.text(), None => String::new() }
+ }
+-fn __sh_v_set_s<T: ToString>(name: &str, v: T) {
+-    __sh_v_put(name, __ShVal { s: v.to_string(), ..__ShVal::default() });
++fn __sh_v_set_s(name: &str, v: impl Into<String>) {
++    __sh_v_put(name, __ShVal { s: v.into(), ..__ShVal::default() });
+ }
+ fn __sh_vw_s<R>(name: &str, f: impl FnOnce(&std::cell::RefCell<String>) -> R) -> R {
+     let tmp = std::cell::RefCell::new(__sh_v_s(name));
+diff --git a/fixtures/rust_idiom/expected/19_printf_literal.rs b/fixtures/rust_idiom/expected/19_printf_literal.rs
+index 343d60bfb..e800d338b 100644
+--- a/fixtures/rust_idiom/expected/19_printf_literal.rs
++++ b/fixtures/rust_idiom/expected/19_printf_literal.rs
+@@ -1,4 +1,7 @@
+ use std::sync::atomic::Ordering;
++static __SH_OUT: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
++thread_local! { static __SH_OUTFILE_TL: std::cell::RefCell<Option<std::fs::File>> = const { std::cell::RefCell::new(None) }; }
++
+ static __SH_ARITH_WORD_FAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+ 
+ fn __sh_print_words<W: AsRef<str>>(ws: &[&[W]], nl: bool) {
+@@ -20,6 +23,13 @@ fn __sh_print_words<W: AsRef<str>>(ws: &[&[W]], nl: bool) {
+         }
+     }
+     if nl { s.push('\n'); }
++    let mut used = false;
++    __SH_OUTFILE_TL.with(|v| { if let Some(f) = v.borrow_mut().as_mut() { let _ = std::io::Write::write_all(f, s.as_bytes()); used = true; } });
++    if used { return; }
++    if let Some(b) = __SH_OUT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
++        b.extend_from_slice(s.as_bytes());
++        return;
++    }
+     print!("{s}");
+ }
+ 
+diff --git a/fixtures/rust_idiom/expected/20_printf_dynamic.rs b/fixtures/rust_idiom/expected/20_printf_dynamic.rs
+index 7e07235c6..34ee68795 100644
+--- a/fixtures/rust_idiom/expected/20_printf_dynamic.rs
++++ b/fixtures/rust_idiom/expected/20_printf_dynamic.rs
+@@ -1,6 +1,9 @@
+ use std::sync::atomic::Ordering;
+ type Word = std::borrow::Cow<'static, str>;
+ 
++static __SH_OUT: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
++thread_local! { static __SH_OUTFILE_TL: std::cell::RefCell<Option<std::fs::File>> = const { std::cell::RefCell::new(None) }; }
++
+ static __SH_ARITH_WORD_FAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+ 
+ fn __sh_q_printf(s: &str) -> String {
+@@ -11,6 +14,7 @@ fn __sh_q_printf(s: &str) -> String {
+     }
+     if ansi {
+         // control chars â bash switches to $'...' ANSI-C quoting
++        use std::fmt::Write as _;
+         let mut body = String::new();
+         for c in s.chars() {
+             match c {
+@@ -19,7 +23,7 @@ fn __sh_q_printf(s: &str) -> String {
+                 '\r' => body.push_str("\\r"),
+                 '\'' => body.push_str("\\'"),
+                 '\\' => body.push_str("\\\\"),
+-                c if (c as u32) < 32 || c as u32 == 127 => body.push_str(&format!("\\x{:02x}", c as u32)),
++                c if (c as u32) < 32 || c as u32 == 127 => { let _ = write!(body, "\\x{:02x}", c as u32); }
+                 _ => body.push(c),
+             }
+         }
+@@ -36,40 +40,40 @@ fn __sh_q_printf(s: &str) -> String {
+     o
+ }
+ 
+-fn __sh_echo_esc(s: &str) -> String {
+-    let mut o = String::new();
+-    let ch: Vec<char> = s.chars().collect();
+-    let mut i = 0;
+-    while i < ch.len() {
+-        if ch[i] == '\\' && i + 1 < ch.len() {
+-            i += 1;
+-            match ch[i] {
+-                'n' => o.push('\n'), 't' => o.push('\t'), 'r' => o.push('\r'),
+-                'a' => o.push('\x07'), 'b' => o.push('\x08'), 'f' => o.push('\x0c'),
+-                'v' => o.push('\x0b'), 'e' => o.push('\x1b'), '\\' => o.push('\\'),
+-                'c' => return o,
++fn __sh_echo_esc(text: &str) -> String {
++    let mut out = String::new();
++    let chars: Vec<char> = text.chars().collect();
++    let mut idx = 0;
++    while idx < chars.len() {
++        if chars[idx] == '\\' && idx + 1 < chars.len() {
++            idx += 1;
++            match chars[idx] {
++                'n' => out.push('\n'), 't' => out.push('\t'), 'r' => out.push('\r'),
++                'a' => out.push('\x07'), 'b' => out.push('\x08'), 'f' => out.push('\x0c'),
++                'v' => out.push('\x0b'), 'e' => out.push('\x1b'), '\\' => out.push('\\'),
++                'c' => return out,
+                 '0'..='7' => {
+-                    let mut n = 0; let mut k = 0;
+-                    while k < 3 && i + k < ch.len() && ch[i + k].is_ascii_digit() && ch[i + k] <= '7' {
+-                        n *= 8 + (ch[i + k] as u32 - '0' as u32); k += 1;
++                    let mut num = 0; let mut nk = 0;
++                    while nk < 3 && idx + nk < chars.len() && chars[idx + nk].is_ascii_digit() && chars[idx + nk] <= '7' {
++                        num *= 8 + (chars[idx + nk] as u32 - '0' as u32); nk += 1;
+                     }
+-                    o.push(char::from_u32(n & 0xff).unwrap_or('\0'));
+-                    i += k - 1;
++                    out.push(char::from_u32(num & 0xff).unwrap_or('\0'));
++                    idx += nk - 1;
+                 }
+                 'x' => {
+-                    let mut n = 0; let mut k = 0;
+-                    while k < 2 && i + 1 + k < ch.len() && ch[i + 1 + k].is_ascii_hexdigit() {
+-                        n *= 16 + ch[i + 1 + k].to_digit(16).unwrap_or(0); k += 1;
++                    let mut num = 0; let mut nk = 0;
++                    while nk < 2 && idx + 1 + nk < chars.len() && chars[idx + 1 + nk].is_ascii_hexdigit() {
++                        num *= 16 + chars[idx + 1 + nk].to_digit(16).unwrap_or(0); nk += 1;
+                     }
+-                    if k > 0 { o.push(char::from_u32(n).unwrap_or('\0')); i += k; }
+-                    else { o.push('x'); }
++                    if nk > 0 { out.push(char::from_u32(num).unwrap_or('\0')); idx += nk; }
++                    else { out.push('x'); }
+                 }
+-                c => { o.push('\\'); o.push(c); }
++                lit => { out.push('\\'); out.push(lit); }
+             }
+-            i += 1;
+-        } else { o.push(ch[i]); i += 1; }
++            idx += 1;
++        } else { out.push(chars[idx]); idx += 1; }
+     }
+-    o
++    out
+ }
+ 
+ fn __sh_printf_b(s: &str) -> String { __sh_echo_esc(s) }
+@@ -97,8 +101,8 @@ fn __sh_atof(s: &str) -> f64 {
+ fn __sh_print_words<W: AsRef<str>>(ws: &[&[W]], nl: bool) {
+     // no echo in this program used -e: there is no unescape arm and no
+     // `__sh_echo_esc` dependency, and no argument to pass for one.
+-    // a word's `$((…))` arith expansion FAILED (an empty positional
+-    // makes the expanded text a syntax error) — bash suppresses the
++    // a word's `$((â¦))` arith expansion FAILED (an empty positional
++    // makes the expanded text a syntax error) â bash suppresses the
+     // WHOLE simple command, not just the word
+     if __SH_ARITH_WORD_FAIL.swap(false, Ordering::SeqCst) { return; }
+     let mut s = String::new();
+@@ -113,7 +117,14 @@ fn __sh_print_words<W: AsRef<str>>(ws: &[&[W]], nl: bool) {
+         }
+     }
+     if nl { s.push('\n'); }
+-    print!("{}", s);
++    let mut used = false;
++    __SH_OUTFILE_TL.with(|v| { if let Some(f) = v.borrow_mut().as_mut() { let _ = std::io::Write::write_all(f, s.as_bytes()); used = true; } });
++    if used { return; }
++    if let Some(b) = __SH_OUT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
++        b.extend_from_slice(s.as_bytes());
++        return;
++    }
++    print!("{s}");
+ }
+ 
+ fn __sh_printf(fmt: &str, args: &[Word]) -> String {
+@@ -153,41 +164,42 @@ fn __sh_printf(fmt: &str, args: &[Word]) -> String {
+                 continue;
+             }
+             if c == '%' && i + 1 < ch.len() {
+-                let mut j = i + 1;
++                let mut jp = i + 1;
+                 let mut flags = String::new();
+-                while j < ch.len() && "-+ 0#".contains(ch[j]) { flags.push(ch[j]); j += 1; }
++                while jp < ch.len() && "-+ 0#".contains(ch[jp]) { flags.push(ch[jp]); jp += 1; }
+                 let mut width = String::new();
+-                while j < ch.len() && ch[j].is_ascii_digit() { width.push(ch[j]); j += 1; }
++                while jp < ch.len() && ch[jp].is_ascii_digit() { width.push(ch[jp]); jp += 1; }
+                 let mut prec: Option<String> = None;
+-                if j < ch.len() && ch[j] == '.' {
+-                    j += 1;
++                if jp < ch.len() && ch[jp] == '.' {
++                    jp += 1;
+                     let mut p = String::new();
+-                    while j < ch.len() && ch[j].is_ascii_digit() { p.push(ch[j]); j += 1; }
++                    while jp < ch.len() && ch[jp].is_ascii_digit() { p.push(ch[jp]); jp += 1; }
+                     prec = Some(p);
+                 }
+-                // C LENGTH MODIFIERS (`%lld`, `%zu`, `%hhd`) — skip them:
++                // C LENGTH MODIFIERS (`%lld`, `%zu`, `%hhd`) â skip them:
+                 // an unconsumed 'l' leaked into the output verbatim
+                 // (corpus-c 008_sized_ints printed "4000000000ld")
+-                while j < ch.len() && "lhLzjt".contains(ch[j]) { j += 1; }
+-                if j >= ch.len() { out.push('%'); break; }
+-                let conv = ch[j];
+-                i = j + 1;
++                while jp < ch.len() && "lhLzjt".contains(ch[jp]) { jp += 1; }
++                if jp >= ch.len() { out.push('%'); break; }
++                let conv = ch[jp];
++                i = jp + 1;
+                 if conv == '%' { out.push('%'); continue; }
+                 let arg = args.get(ai).map(ToString::to_string).unwrap_or_default();
+                 ai += 1;
+-                let w: usize = width.parse().unwrap_or(0);
++                let want: usize = width.parse().unwrap_or(0);
+                 let left = flags.contains('-');
+                 let zero = flags.contains('0');
+-                let p = prec.as_ref().map(|s| s.parse().unwrap_or(0)).unwrap_or(-1);
++                let p = prec.as_ref().map_or(-1, |s| s.parse().unwrap_or(0));
++                let pu = usize::try_from(p).unwrap_or(0);
+                 let mut piece;
+                 match conv {
+                     's' => {
+                         piece = arg.clone();
+-                        if p >= 0 { piece = piece.chars().take(p as usize).collect(); }
++                        if p >= 0 { piece = piece.chars().take(pu).collect(); }
+                     }
+                     'b' => {
+                         piece = __sh_printf_b(&arg);
+-                        if p >= 0 { piece = piece.chars().take(p as usize).collect(); }
++                        if p >= 0 { piece = piece.chars().take(pu).collect(); }
+                     }
+                     'q' => { piece = __sh_q_printf(&arg); }
+                     'c' => { piece = arg.chars().next().map(|c| c.to_string()).unwrap_or_default(); }
+@@ -196,29 +208,24 @@ fn __sh_printf(fmt: &str, args: &[Word]) -> String {
+                     'o' => { piece = format!("{:o}", __sh_atou(&arg)); }
+                     'x' => { piece = format!("{:x}", __sh_atou(&arg)); }
+                     'X' => { piece = format!("{:X}", __sh_atou(&arg)); }
+-                    'f' | 'F' => {
++                    'f' | 'F' | 'g' | 'G' => {
+                         let fv = __sh_atof(&arg);
+-                        let p2 = if p < 0 { 6 } else { p as usize };
+-                        piece = format!("{:.*}", p2, fv);
++                        let p2 = if p < 0 { 6 } else { pu };
++                        piece = format!("{fv:.p2$}");
+                     }
+                     'e' | 'E' => {
+                         let fv = __sh_atof(&arg);
+-                        let p2 = if p < 0 { 6 } else { p as usize };
+-                        piece = format!("{:.*e}", p2, fv);
++                        let p2 = if p < 0 { 6 } else { pu };
++                        piece = format!("{fv:.p2$e}");
+                         if conv == 'E' { piece = piece.to_uppercase(); }
+                     }
+-                    'g' | 'G' => {
+-                        let fv = __sh_atof(&arg);
+-                        let p2 = if p < 0 { 6 } else { p as usize };
+-                        piece = format!("{:.*}", p2, fv);
+-                    }
+                     _ => { piece = arg.clone(); }
+                 }
+-                if w > piece.chars().count() {
+-                    let pad = w - piece.chars().count();
+-                    if left { piece = format!("{}{}", piece, " ".repeat(pad)); }
+-                    else if zero { piece = format!("{}{}", "0".repeat(pad), piece); }
+-                    else { piece = format!("{}{}", " ".repeat(pad), piece); }
++                if want > piece.chars().count() {
++                    let pad = want - piece.chars().count();
++                    if left { piece = format!("{piece}{}", " ".repeat(pad)); }
++                    else if zero { piece = format!("{}{piece}", "0".repeat(pad)); }
++                    else { piece = format!("{}{piece}", " ".repeat(pad)); }
+                 }
+                 out.push_str(&piece);
+                 continue;
+diff --git a/fixtures/rust_idiom/expected/21_pipeline_interleave.rs b/fixtures/rust_idiom/expected/21_pipeline_interleave.rs
+index 496433cd3..5f92f03c7 100644
+--- a/fixtures/rust_idiom/expected/21_pipeline_interleave.rs
++++ b/fixtures/rust_idiom/expected/21_pipeline_interleave.rs
+@@ -31,6 +31,7 @@ fn __sh_q_printf(s: &str) -> String {
+     }
+     if ansi {
+         // control chars â bash switches to $'...' ANSI-C quoting
++        use std::fmt::Write as _;
+         let mut body = String::new();
+         for c in s.chars() {
+             match c {
+@@ -39,7 +40,7 @@ fn __sh_q_printf(s: &str) -> String {
+                 '\r' => body.push_str("\\r"),
+                 '\'' => body.push_str("\\'"),
+                 '\\' => body.push_str("\\\\"),
+-                c if (c as u32) < 32 || c as u32 == 127 => body.push_str(&format!("\\x{:02x}", c as u32)),
++                c if (c as u32) < 32 || c as u32 == 127 => { let _ = write!(body, "\\x{:02x}", c as u32); }
+                 _ => body.push(c),
+             }
+         }
+@@ -69,40 +70,40 @@ fn __sh_wq(ws: &[Word]) -> String {
+     o
+ }
+ 
+-fn __sh_echo_esc(s: &str) -> String {
+-    let mut o = String::new();
+-    let ch: Vec<char> = s.chars().collect();
+-    let mut i = 0;
+-    while i < ch.len() {
+-        if ch[i] == '\\' && i + 1 < ch.len() {
+-            i += 1;
+-            match ch[i] {
+-                'n' => o.push('\n'), 't' => o.push('\t'), 'r' => o.push('\r'),
+-                'a' => o.push('\x07'), 'b' => o.push('\x08'), 'f' => o.push('\x0c'),
+-                'v' => o.push('\x0b'), 'e' => o.push('\x1b'), '\\' => o.push('\\'),
+-                'c' => return o,
++fn __sh_echo_esc(text: &str) -> String {
++    let mut out = String::new();
++    let chars: Vec<char> = text.chars().collect();
++    let mut idx = 0;
++    while idx < chars.len() {
++        if chars[idx] == '\\' && idx + 1 < chars.len() {
++            idx += 1;
++            match chars[idx] {
++                'n' => out.push('\n'), 't' => out.push('\t'), 'r' => out.push('\r'),
++                'a' => out.push('\x07'), 'b' => out.push('\x08'), 'f' => out.push('\x0c'),
++                'v' => out.push('\x0b'), 'e' => out.push('\x1b'), '\\' => out.push('\\'),
++                'c' => return out,
+                 '0'..='7' => {
+-                    let mut n = 0; let mut k = 0;
+-                    while k < 3 && i + k < ch.len() && ch[i + k].is_ascii_digit() && ch[i + k] <= '7' {
+-                        n *= 8 + (ch[i + k] as u32 - '0' as u32); k += 1;
++                    let mut num = 0; let mut nk = 0;
++                    while nk < 3 && idx + nk < chars.len() && chars[idx + nk].is_ascii_digit() && chars[idx + nk] <= '7' {
++                        num *= 8 + (chars[idx + nk] as u32 - '0' as u32); nk += 1;
+                     }
+-                    o.push(char::from_u32(n & 0xff).unwrap_or('\0'));
+-                    i += k - 1;
++                    out.push(char::from_u32(num & 0xff).unwrap_or('\0'));
++                    idx += nk - 1;
+                 }
+                 'x' => {
+-                    let mut n = 0; let mut k = 0;
+-                    while k < 2 && i + 1 + k < ch.len() && ch[i + 1 + k].is_ascii_hexdigit() {
+-                        n *= 16 + ch[i + 1 + k].to_digit(16).unwrap_or(0); k += 1;
++                    let mut num = 0; let mut nk = 0;
++                    while nk < 2 && idx + 1 + nk < chars.len() && chars[idx + 1 + nk].is_ascii_hexdigit() {
++                        num *= 16 + chars[idx + 1 + nk].to_digit(16).unwrap_or(0); nk += 1;
+                     }
+-                    if k > 0 { o.push(char::from_u32(n).unwrap_or('\0')); i += k; }
+-                    else { o.push('x'); }
++                    if nk > 0 { out.push(char::from_u32(num).unwrap_or('\0')); idx += nk; }
++                    else { out.push('x'); }
+                 }
+-                c => { o.push('\\'); o.push(c); }
++                lit => { out.push('\\'); out.push(lit); }
+             }
+-            i += 1;
+-        } else { o.push(ch[i]); i += 1; }
++            idx += 1;
++        } else { out.push(chars[idx]); idx += 1; }
+     }
+-    o
++    out
+ }
+ 
+ fn __sh_printf_b(s: &str) -> String { __sh_echo_esc(s) }
+@@ -130,8 +131,8 @@ fn __sh_atof(s: &str) -> f64 {
+ fn __sh_print_words<W: AsRef<str>>(ws: &[&[W]], nl: bool) {
+     // no echo in this program used -e: there is no unescape arm and no
+     // `__sh_echo_esc` dependency, and no argument to pass for one.
+-    // a word's `$((…))` arith expansion FAILED (an empty positional
+-    // makes the expanded text a syntax error) — bash suppresses the
++    // a word's `$((â¦))` arith expansion FAILED (an empty positional
++    // makes the expanded text a syntax error) â bash suppresses the
+     // WHOLE simple command, not just the word
+     if __SH_ARITH_WORD_FAIL.swap(false, Ordering::SeqCst) { return; }
+     let mut s = String::new();
+@@ -153,7 +154,7 @@ fn __sh_print_words<W: AsRef<str>>(ws: &[&[W]], nl: bool) {
+         b.extend_from_slice(s.as_bytes());
+         return;
+     }
+-    print!("{}", s);
++    print!("{s}");
+ }
+ 
+ fn __sh_printf(fmt: &str, args: &[Word]) -> String {
+@@ -193,41 +194,42 @@ fn __sh_printf(fmt: &str, args: &[Word]) -> String {
+                 continue;
+             }
+             if c == '%' && i + 1 < ch.len() {
+-                let mut j = i + 1;
++                let mut jp = i + 1;
+                 let mut flags = String::new();
+-                while j < ch.len() && "-+ 0#".contains(ch[j]) { flags.push(ch[j]); j += 1; }
++                while jp < ch.len() && "-+ 0#".contains(ch[jp]) { flags.push(ch[jp]); jp += 1; }
+                 let mut width = String::new();
+-                while j < ch.len() && ch[j].is_ascii_digit() { width.push(ch[j]); j += 1; }
++                while jp < ch.len() && ch[jp].is_ascii_digit() { width.push(ch[jp]); jp += 1; }
+                 let mut prec: Option<String> = None;
+-                if j < ch.len() && ch[j] == '.' {
+-                    j += 1;
++                if jp < ch.len() && ch[jp] == '.' {
++                    jp += 1;
+                     let mut p = String::new();
+-                    while j < ch.len() && ch[j].is_ascii_digit() { p.push(ch[j]); j += 1; }
++                    while jp < ch.len() && ch[jp].is_ascii_digit() { p.push(ch[jp]); jp += 1; }
+                     prec = Some(p);
+                 }
+-                // C LENGTH MODIFIERS (`%lld`, `%zu`, `%hhd`) — skip them:
++                // C LENGTH MODIFIERS (`%lld`, `%zu`, `%hhd`) â skip them:
+                 // an unconsumed 'l' leaked into the output verbatim
+                 // (corpus-c 008_sized_ints printed "4000000000ld")
+-                while j < ch.len() && "lhLzjt".contains(ch[j]) { j += 1; }
+-                if j >= ch.len() { out.push('%'); break; }
+-                let conv = ch[j];
+-                i = j + 1;
++                while jp < ch.len() && "lhLzjt".contains(ch[jp]) { jp += 1; }
++                if jp >= ch.len() { out.push('%'); break; }
++                let conv = ch[jp];
++                i = jp + 1;
+                 if conv == '%' { out.push('%'); continue; }
+                 let arg = args.get(ai).map(ToString::to_string).unwrap_or_default();
+                 ai += 1;
+-                let w: usize = width.parse().unwrap_or(0);
++                let want: usize = width.parse().unwrap_or(0);
+                 let left = flags.contains('-');
+                 let zero = flags.contains('0');
+-                let p = prec.as_ref().map(|s| s.parse().unwrap_or(0)).unwrap_or(-1);
++                let p = prec.as_ref().map_or(-1, |s| s.parse().unwrap_or(0));
++                let pu = usize::try_from(p).unwrap_or(0);
+                 let mut piece;
+                 match conv {
+                     's' => {
+                         piece = arg.clone();
+-                        if p >= 0 { piece = piece.chars().take(p as usize).collect(); }
++                        if p >= 0 { piece = piece.chars().take(pu).collect(); }
+                     }
+                     'b' => {
+                         piece = __sh_printf_b(&arg);
+-                        if p >= 0 { piece = piece.chars().take(p as usize).collect(); }
++                        if p >= 0 { piece = piece.chars().take(pu).collect(); }
+                     }
+                     'q' => { piece = __sh_q_printf(&arg); }
+                     'c' => { piece = arg.chars().next().map(|c| c.to_string()).unwrap_or_default(); }
+@@ -236,29 +238,24 @@ fn __sh_printf(fmt: &str, args: &[Word]) -> String {
+                     'o' => { piece = format!("{:o}", __sh_atou(&arg)); }
+                     'x' => { piece = format!("{:x}", __sh_atou(&arg)); }
+                     'X' => { piece = format!("{:X}", __sh_atou(&arg)); }
+-                    'f' | 'F' => {
++                    'f' | 'F' | 'g' | 'G' => {
+                         let fv = __sh_atof(&arg);
+-                        let p2 = if p < 0 { 6 } else { p as usize };
+-                        piece = format!("{:.*}", p2, fv);
++                        let p2 = if p < 0 { 6 } else { pu };
++                        piece = format!("{fv:.p2$}");
+                     }
+                     'e' | 'E' => {
+                         let fv = __sh_atof(&arg);
+-                        let p2 = if p < 0 { 6 } else { p as usize };
+-                        piece = format!("{:.*e}", p2, fv);
++                        let p2 = if p < 0 { 6 } else { pu };
++                        piece = format!("{fv:.p2$e}");
+                         if conv == 'E' { piece = piece.to_uppercase(); }
+                     }
+-                    'g' | 'G' => {
+-                        let fv = __sh_atof(&arg);
+-                        let p2 = if p < 0 { 6 } else { p as usize };
+-                        piece = format!("{:.*}", p2, fv);
+-                    }
+                     _ => { piece = arg.clone(); }
+                 }
+-                if w > piece.chars().count() {
+-                    let pad = w - piece.chars().count();
+-                    if left { piece = format!("{}{}", piece, " ".repeat(pad)); }
+-                    else if zero { piece = format!("{}{}", "0".repeat(pad), piece); }
+-                    else { piece = format!("{}{}", " ".repeat(pad), piece); }
++                if want > piece.chars().count() {
++                    let pad = want - piece.chars().count();
++                    if left { piece = format!("{piece}{}", " ".repeat(pad)); }
++                    else if zero { piece = format!("{}{piece}", "0".repeat(pad)); }
++                    else { piece = format!("{}{piece}", " ".repeat(pad)); }
+                 }
+                 out.push_str(&piece);
+                 continue;
+@@ -273,7 +270,7 @@ fn __sh_printf(fmt: &str, args: &[Word]) -> String {
+ 
+ fn __sh_spawn(cmd: &str, input: Option<&[u8]>) -> i32 {
+     // a shell-out inside a native stage inherits the stage's stdin
+-    // (`echo x | grep -f <(…)` — the grep reads the echo's buffer)
++    // (`echo x | grep -f <(â¦)` â the grep reads the echo's buffer)
+     let mut input = input.map(<[u8]>::to_vec);
+     let stdin_path = __SH_STDIN_PATH.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+     if input.is_none() && stdin_path.is_none() {
+@@ -287,7 +284,7 @@ fn __sh_spawn(cmd: &str, input: Option<&[u8]>) -> i32 {
+     let mut c = std::process::Command::new("bash");
+     c.arg("-c").arg(cmd);
+     if !want_out {
+-        // the child inherits fd 1 raw — flush Rust's buffered stdout
++        // the child inherits fd 1 raw â flush Rust's buffered stdout
+         // first so prints BEFORE the child hit the pipe first
+         let _ = std::io::Write::flush(&mut std::io::stdout());
+     }
+@@ -302,7 +299,7 @@ fn __sh_spawn(cmd: &str, input: Option<&[u8]>) -> i32 {
+         }
+     }
+     if input.is_some() { c.stdin(std::process::Stdio::piped()); }
+-    let mut ch = match c.spawn() { Ok(x) => x, Err(_) => return 1 };
++    let Ok(mut ch) = c.spawn() else { return 1 };
+     if let Some(data) = input {
+         if let Some(mut si) = ch.stdin.take() { let _ = std::io::Write::write_all(&mut si, &data); }
+     }
+@@ -310,7 +307,7 @@ fn __sh_spawn(cmd: &str, input: Option<&[u8]>) -> i32 {
+     if let Some(mut so) = ch.stdout.take() {
+         let _ = std::io::Read::read_to_end(&mut so, &mut out);
+     }
+-    let rc = ch.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
++    let rc = ch.wait().map_or(1, |s| s.code().unwrap_or(1));
+     if !out.is_empty() {
+         let mut used = false;
+         __SH_OUTFILE_TL.with(|v| { if let Some(f) = v.borrow_mut().as_mut() { let _ = std::io::Write::write_all(f, &out); used = true; } });
+@@ -329,7 +326,7 @@ fn __sh_pipe<W: AsRef<str>>(stages: &[&[W]], input: Option<&[u8]>, sink: Option<
+     // The emitted program owns the pipeline: every stage is spawned right
+     // here and the stages are connected with REAL OS pipes, so nothing is
+     // handed back to `bash -c`. SIGPIPE works because the kernel closes the
+-    // read end — buffering a stage's bytes in a Vec between stages would
++    // read end â buffering a stage's bytes in a Vec between stages would
+     // deadlock `yes | head`.
+     if stages.is_empty() { return 0; }
+     let mut input = input.map(<[u8]>::to_vec);
+@@ -374,7 +371,7 @@ fn __sh_pipe<W: AsRef<str>>(stages: &[&[W]], input: Option<&[u8]>, sink: Option<
+             c.stdin(std::process::Stdio::from(p));
+         }
+         if i < last || sink.is_some() || want_out { c.stdout(std::process::Stdio::piped()); }
+-        let mut ch = match c.spawn() { Ok(x) => x, Err(_) => { spawn_err = true; break; } };
++        let Ok(mut ch) = c.spawn() else { spawn_err = true; break; };
+         if i == 0 {
+             if let Some(data) = input.take() {
+                 if let Some(mut si) = ch.stdin.take() { let _ = std::io::Write::write_all(&mut si, &data); }
+@@ -394,8 +391,8 @@ fn __sh_pipe<W: AsRef<str>>(stages: &[&[W]], input: Option<&[u8]>, sink: Option<
+     // bash gives PIPESTATUS one entry per stage; the last stage's status is
+     // the pipeline's `$?`
+     let mut statuses: Vec<i32> = Vec::new();
+-    for ch in children.iter_mut() {
+-        statuses.push(ch.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1));
++    for ch in &mut children {
++        statuses.push(ch.wait().map_or(1, |s| s.code().unwrap_or(1)));
+     }
+     {
+         let mut ps = __SH_PIPESTATUS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+@@ -457,7 +454,7 @@ impl __ShVar {
+ 
+ /// The store itself: every unpromoted name plus the one piece of `$?`-adjacent
+ /// state a refused write leaves behind. `ro_trip` is consumed by the next
+-/// status write, so `$?` is 1 exactly until the next command runs — what bash
++/// status write, so `$?` is 1 exactly until the next command runs â what bash
+ /// reports for a failed assignment (`x=1` on a readonly name).
+ struct __ShStore {
+     vars: std::collections::BTreeMap<String, __ShVar>,
+@@ -465,7 +462,7 @@ struct __ShStore {
+     /// set by a REFUSED ASSIGNMENT: bash answers one by unwinding every
+     /// enclosing compound command back to the top level (the shell keeps
+     /// running, the statement's status is 1). Cleared at the top level, so a
+-    /// refused `unset` — which bash fails without unwinding — never sets it.
++    /// refused `unset` â which bash fails without unwinding â never sets it.
+     unwind: bool,
+     /// source line of the statement being executed (`__sh_v_at`), which is
+     /// what bash prefixes a refused write's diagnostic with
+@@ -479,7 +476,7 @@ fn __sh_v_rc_trip() -> bool {
+ /// happened in, then every body around it, up to the top-level statement list.
+ /// Each emitted body asks this at the end of every statement and leaves itself
+ /// when it is set; the top level clears it, so the shell carries on with the
+-/// refused assignment's status — exactly what bash does.
++/// refused assignment's status â exactly what bash does.
+ fn __sh_v_unwind_pending() -> bool {
+     __SH_VARS.with(|s| s.borrow().unwind)
+ }
+@@ -499,7 +496,7 @@ fn __sh_prog() -> String {
+     std::env::args().next().unwrap_or_default()
+ }
+ /// Record the source line of the statement whose store write can be refused
+-/// (`readonly`). Bash's message is `<prog>: line N: <name>: …`; the renderer
++/// (`readonly`). Bash's message is `<prog>: line N: <name>: â¦`; the renderer
+ /// knows N and hands it here, so no accessor formats a location itself.
+ fn __sh_v_at(line: u32) {
+     __SH_VARS.with(|s| s.borrow_mut().at_line = line);
+@@ -548,7 +545,7 @@ fn __sh_v_put(name: &str, val: __ShVal) {
+ }
+ 
+ /// Save one name's whole entry (value plus flags) for a scope that must put
+-/// it back afterwards — a subshell, a background capture, a dynamic scope.
++/// it back afterwards â a subshell, a background capture, a dynamic scope.
+ fn __sh_v_save(name: &str) -> Option<__ShVar> {
+     __sh_v_get(name)
+ }
+@@ -562,7 +559,7 @@ fn __sh_v_restore_one(name: &str, saved: Option<__ShVar>) {
+     });
+ }
+ 
+-/// `unset NAME` — a readonly name keeps its entry and fails like bash.
++/// `unset NAME` â a readonly name keeps its entry and fails like bash.
+ fn __sh_v_unset(name: &str) {
+     let mut denied = false;
+     __SH_VARS.with(|s| {
+@@ -587,7 +584,7 @@ fn __sh_v_unset(name: &str) {
+     }
+ }
+ 
+-/// `export NAME` — the flag lives in the store, so every later write keeps
++/// `export NAME` â the flag lives in the store, so every later write keeps
+ /// the child environment in sync.
+ fn __sh_v_export(name: &str) {
+     let mut val = None;
+@@ -600,7 +597,7 @@ fn __sh_v_export(name: &str) {
+     if let Some(v) = val { std::env::set_var(name, v); }
+ }
+ 
+-/// `readonly NAME` / `declare -r` — refusal happens on every later write.
++/// `readonly NAME` / `declare -r` â refusal happens on every later write.
+ fn __sh_v_mark_readonly(name: &str) {
+     __SH_VARS.with(|s| {
+         let mut s = s.borrow_mut();
+@@ -611,8 +608,8 @@ fn __sh_v_mark_readonly(name: &str) {
+ fn __sh_v_s(name: &str) -> String {
+     match __sh_v_get(name) { Some(v) => v.val.text(), None => String::new() }
+ }
+-fn __sh_v_set_s<T: ToString>(name: &str, v: T) {
+-    __sh_v_put(name, __ShVal { s: v.to_string(), ..__ShVal::default() });
++fn __sh_v_set_s(name: &str, v: impl Into<String>) {
++    __sh_v_put(name, __ShVal { s: v.into(), ..__ShVal::default() });
+ }
+ fn __sh_vw_s<R>(name: &str, f: impl FnOnce(&std::cell::RefCell<String>) -> R) -> R {
+     let tmp = std::cell::RefCell::new(__sh_v_s(name));
+@@ -713,12 +710,12 @@ fn main() {
+     while __s.ends_with('\n') { __s.pop(); }
+     __s
+ };
+-    __sh_print_words::<Word>(&[&[format!("lines={}", lastcats).into()]], true);
++    __sh_print_words::<Word>(&[&[format!("lines={lastcats}").into()]], true);
+     __SH_PIPESTATUS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+     let __sh_pbuf9: Vec<u8> = Vec::new();
+     let __sh_stg10: String = format!("{} > {}", __sh_wq(&["grep".into(), "-h".into(), ".".into(), "alpha.txt".into(), "beta.txt".into()]), __sh_q("joined.txt"));
+     let __sh_stg11: String = __sh_wq(&["wc".into(), "-c".into()]);
+-    let __sh_stg12: String = format!("{} | {}", __sh_stg10, __sh_stg11);
++    let __sh_stg12: String = format!("{__sh_stg10} | {__sh_stg11}");
+     __SH_RC.store(__sh_spawn(&__sh_stg12, Some(&__sh_pbuf9)), Ordering::SeqCst);
+     __SH_PIPESTATUS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(__SH_RC.load(Ordering::SeqCst));
+     __SH_RC.store(__sh_spawn(&format!("{} < {}", __sh_wq(&["wc".into(), "-l".into()]), __sh_q("joined.txt")), None), Ordering::SeqCst);
+diff --git a/fixtures/rust_idiom/expected/22_vars_store.rs b/fixtures/rust_idiom/expected/22_vars_store.rs
+index 57d0571f2..160dca56c 100644
+--- a/fixtures/rust_idiom/expected/22_vars_store.rs
++++ b/fixtures/rust_idiom/expected/22_vars_store.rs
+@@ -72,6 +72,11 @@ fn __sh_puts(s: &str) {
+     print!("{s}");
+ }
+ 
++/// The `[ -n WORD ]` / `[ WORD ]` test as a named predicate: spelled
++/// `!word.is_empty()` inline it makes every `if`/`else` over it a
++/// `clippy::if_not_else` finding, and the negation is the test, not a typo.
++fn __sh_nonempty(s: &str) -> bool { !s.is_empty() }
++
+ fn __sh_spawn(cmd: &str, input: Option<&[u8]>) -> i32 {
+     // a shell-out inside a native stage inherits the stage's stdin
+     // (`echo x | grep -f <(â¦)` â the grep reads the echo's buffer)
+@@ -103,7 +108,7 @@ fn __sh_spawn(cmd: &str, input: Option<&[u8]>) -> i32 {
+         }
+     }
+     if input.is_some() { c.stdin(std::process::Stdio::piped()); }
+-    let mut ch = match c.spawn() { Ok(x) => x, Err(_) => return 1 };
++    let Ok(mut ch) = c.spawn() else { return 1 };
+     if let Some(data) = input {
+         if let Some(mut si) = ch.stdin.take() { let _ = std::io::Write::write_all(&mut si, &data); }
+     }
+@@ -111,7 +116,7 @@ fn __sh_spawn(cmd: &str, input: Option<&[u8]>) -> i32 {
+     if let Some(mut so) = ch.stdout.take() {
+         let _ = std::io::Read::read_to_end(&mut so, &mut out);
+     }
+-    let rc = ch.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
++    let rc = ch.wait().map_or(1, |s| s.code().unwrap_or(1));
+     if !out.is_empty() {
+         let mut used = false;
+         __SH_OUTFILE_TL.with(|v| { if let Some(f) = v.borrow_mut().as_mut() { let _ = std::io::Write::write_all(f, &out); used = true; } });
+@@ -141,13 +146,12 @@ fn __sh_readline() -> (String, bool) {
+     let mut r = src;
+     loop {
+         match r.read(&mut one) {
+-            Ok(0) => break,
++            Ok(0) | Err(_) => break,
+             Ok(_) => {
+                 if one[0] == b'\n' { any = true; break; }
+                 buf.push(one[0]);
+                 any = true;
+             }
+-            Err(_) => break,
+         }
+     }
+     *__SH_STDIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(r);
+@@ -397,8 +401,8 @@ fn __sh_vw_i<R>(name: &str, f: impl FnOnce(&std::cell::Cell<i64>) -> R) -> R {
+ fn __sh_v_s(name: &str) -> String {
+     match __sh_v_get(name) { Some(v) => v.val.text(), None => String::new() }
+ }
+-fn __sh_v_set_s<T: ToString>(name: &str, v: T) {
+-    __sh_v_put(name, __ShVal { s: v.to_string(), ..__ShVal::default() });
++fn __sh_v_set_s(name: &str, v: impl Into<String>) {
++    __sh_v_put(name, __ShVal { s: v.into(), ..__ShVal::default() });
+ }
+ fn __sh_vw_s<R>(name: &str, f: impl FnOnce(&std::cell::RefCell<String>) -> R) -> R {
+     let tmp = std::cell::RefCell::new(__sh_v_s(name));
+@@ -504,7 +508,7 @@ __any
+             __sh_while_last4 = __SH_RC.load(Ordering::SeqCst);
+             if __sh_v_unwind_pending() { break; }
+         }
+-        if !__sh_while_ran3 { __SH_RC.store(0, Ordering::SeqCst); } else { __SH_RC.store(__sh_while_last4, Ordering::SeqCst); }
++        if __sh_while_ran3 { __SH_RC.store(__sh_while_last4, Ordering::SeqCst); } else { __SH_RC.store(0, Ordering::SeqCst); }
+     }
+     *__SH_STDIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = __oldin;
+     __SH_PIPESTATUS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(__SH_RC.load(Ordering::SeqCst));
+@@ -525,7 +529,7 @@ __any
+     __sh_print_words::<Word>(&[&[format!("refuse-fn rc={}", __SH_RC.load(Ordering::SeqCst)).into()]], true);
+     __sh_v_unwind_clear();
+     __sh_v_at(55);
+-    if !format!("{}x", __sh_v_s("LIMIT")).is_empty() {
++    if __sh_nonempty(&format!("{}x", __sh_v_s("LIMIT"))) {
+         'unwind: {
+             if __sh_v_unwind_pending() { break 'unwind; }
+     __sh_v_at(56);
+@@ -586,7 +590,7 @@ __any
+                 __sh_while_last7 = __SH_RC.load(Ordering::SeqCst);
+                 if __sh_v_unwind_pending() { break; }
+             }
+-            if !__sh_while_ran6 { __SH_RC.store(0, Ordering::SeqCst); } else { __SH_RC.store(__sh_while_last7, Ordering::SeqCst); }
++            if __sh_while_ran6 { __SH_RC.store(__sh_while_last7, Ordering::SeqCst); } else { __SH_RC.store(0, Ordering::SeqCst); }
+         }
+         *__SH_STDIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = __oldin;
+     }
+@@ -629,7 +633,7 @@ __any
+     __sh_print_words::<Word>(&[&[format!("unset-fn rc={}", __SH_RC.load(Ordering::SeqCst)).into()]], true);
+     __sh_v_unwind_clear();
+     __sh_v_at(89);
+-    if !format!("{}x", __sh_v_s("LIMIT")).is_empty() {
++    if __sh_nonempty(&format!("{}x", __sh_v_s("LIMIT"))) {
+         'unwind: {
+             if __sh_v_unwind_pending() { break 'unwind; }
+     __sh_v_at(90);
+@@ -690,7 +694,7 @@ __any
+                 __sh_while_last11 = __SH_RC.load(Ordering::SeqCst);
+                 if __sh_v_unwind_pending() { break; }
+             }
+-            if !__sh_while_ran10 { __SH_RC.store(0, Ordering::SeqCst); } else { __SH_RC.store(__sh_while_last11, Ordering::SeqCst); }
++            if __sh_while_ran10 { __SH_RC.store(__sh_while_last11, Ordering::SeqCst); } else { __SH_RC.store(0, Ordering::SeqCst); }
+         }
+         *__SH_STDIN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = __oldin;
+     }
+@@ -722,7 +726,7 @@ __any
+     __SH_TRAPS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push("TRAPPED=9".to_string());
+     __sh_v_unwind_clear();
+     __sh_v_at(124);
+-    { let __src = std::fs::read_to_string("/dev/null").unwrap_or_default(); for __line in __src.lines() { if let Some((__n, __val)) = __line.trim().split_once('=') { if __n == "GREETING" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("GREETING", __v.trim().to_string()); } else if __n == "LIMIT" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("LIMIT", __v.trim().to_string()); } else if __n == "NAMEREF_ALIAS" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("NAMEREF_ALIAS", __v.trim().to_string()); } else if __n == "NAMEREF_TARGET" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("NAMEREF_TARGET", __v.trim().to_string()); } else if __n == "POSARG" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("POSARG", __v.trim().to_string()); } else if __n == "TRAPPED" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_i("TRAPPED", __v.trim().parse::<i64>().unwrap_or(0)); } else if __n == "i" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("i", __v.trim().to_string()); } else if __n == "n" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("n", __v.trim().to_string()); } else if __n == "w" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("w", __v.trim().to_string()); } else { std::env::set_var(__n, __val.trim()); } } } }
++    { let __src = std::fs::read_to_string("/dev/null").unwrap_or_default(); for __line in __src.lines() { if let Some((__n, __val)) = __line.trim().split_once('=') { if __n == "GREETING" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("GREETING", __v.trim()); } else if __n == "LIMIT" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("LIMIT", __v.trim()); } else if __n == "NAMEREF_ALIAS" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("NAMEREF_ALIAS", __v.trim()); } else if __n == "NAMEREF_TARGET" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("NAMEREF_TARGET", __v.trim()); } else if __n == "POSARG" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("POSARG", __v.trim()); } else if __n == "TRAPPED" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_i("TRAPPED", __v.trim().parse::<i64>().unwrap_or(0)); } else if __n == "i" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("i", __v.trim()); } else if __n == "n" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("n", __v.trim()); } else if __n == "w" { let __v = __val.trim_matches(|c| c == '\'' || c == '\"'); __sh_v_set_s("w", __v.trim()); } else { std::env::set_var(__n, __val.trim()); } } } }
+     __sh_v_unwind_clear();
+     __sh_v_at(126);
+     __sh_v_set_s("NAMEREF_TARGET", "1".to_string());
+diff --git a/src/bin/rust_fixtures.rs b/src/bin/rust_fixtures.rs
+index 367f9398f..a0b23632d 100644
+--- a/src/bin/rust_fixtures.rs
++++ b/src/bin/rust_fixtures.rs
+@@ -197,31 +197,24 @@ impl Idioms {
+ /// The ratchet: the measured per-lint counts for this tree. A lint that grows
+ /// — or one that is not here at all — fails the gate and names its sites; a
+ /// lint that drops is reported so the baseline comes down with it.
+-/// Measured on this tree, `cargo run --bin rust_fixtures -- --idiom-only`:
+-/// 66 findings over the 22 generated programs, in 14 families. Three families
+-/// the metric named are now 0 in the emitter and gone from this list — 43
++///
++/// Measured on this tree with `--idiom-only`: **5 findings over the 22
++/// generated programs, in ONE family**. Thirteen families the metric named
++/// are now 0 in the emitter and gone from this list — 43
+ /// `bool_to_int_with_if` status conversions, 118
+-/// `redundant_closure_for_method_calls` and (in the promotion slice) most of
+-/// `uninlined_format_args` (26 → 10) — that is the ratchet working: the metric
+-/// found them, the emitter was fixed, the baseline came down.
+-/// `many_single_char_names` (11) is still clippy's observation about freshly
+-/// emitted names, not ours.
+-const IDIOM_BASELINE: &[(&str, usize)] = &[
+-    ("clippy::cast_possible_wrap", 4),
+-    ("clippy::cast_sign_loss", 10),
+-    ("clippy::explicit_iter_loop", 2),
+-    ("clippy::format_push_string", 2),
+-    ("clippy::if_not_else", 5),
+-    ("clippy::manual_let_else", 4),
+-    ("clippy::many_single_char_names", 11),
+-    ("clippy::map_unwrap_or", 2),
+-    ("clippy::match_same_arms", 3),
+-    ("clippy::needless_pass_by_value", 4),
+-    ("clippy::single_match_else", 2),
+-    ("clippy::too_many_lines", 5),
+-    ("clippy::uninlined_format_args", 10),
+-    ("clippy::unreadable_literal", 2),
+-];
++/// `redundant_closure_for_method_calls`, the promotion slice's 26 -> 10
++/// `uninlined_format_args`, and the whole group the hard `-D warnings` gate
++/// forced out (manual-let-else, single-match-else, map-unwrap-or,
++/// if-not-else, format-push-string, needless-pass-by-value,
++/// explicit-iter-loop, match-same-arms, many-single-char-names,
++/// uninlined-format-args, unreadable-literal, cast-sign-loss,
++/// cast-possible-wrap) — that is the ratchet working: the metric found them,
++/// the emitter was fixed, the baseline came down.
++///
++/// `too_many_lines` stays because the length of an emitted FUNCTION is the
++/// length of the script it came from; the reason, and what it would take, is
++/// recorded once in `rust_backend::UNAVOIDABLE_PEDANTIC`.
++const IDIOM_BASELINE: &[(&str, usize)] = &[("clippy::too_many_lines", 5)];
+ 
+ /// Run clippy over one generated program with clippy's `pedantic` group and
+ /// collect its diagnostics. Nothing is suppressed and nothing is filtered but
+@@ -578,7 +571,15 @@ fn clippy_lints(code: &str, name: &str, dir: &Path, optimised: bool) -> Result<(
+     if optimised {
+         c.arg("--release");
+     }
+-    c.args(["--", "-D", "warnings"]);
++    // pedantic + `-D warnings`: a pedantic finding is a FAILURE, not a data
++    // point. The one exception is the documented list in
++    // `rust_backend::UNAVOIDABLE_PEDANTIC` (emitted-function length, which no
++    // emission shape can control).
++    c.args(["--", "-W", "clippy::pedantic"]);
++    for lint in debashl::rust_backend::UNAVOIDABLE_PEDANTIC {
++        c.arg("-A").arg(lint);
++    }
++    c.args(["-D", "warnings"]);
+     let res = c.output().expect("run cargo clippy");
+     if res.status.success() && res.stderr.is_empty() {
+         return Ok(());
+@@ -681,13 +682,19 @@ fn main() {
+         c.statics = code.matches("static __SHV_").count();
+         c.stored = store_accesses(&code);
+         total.add(c);
++        // A program that names an external crate never compiles, so clippy
++        // cannot score it: that is the documented NEEDS-CRATE exception, not
++        // an idiom gap (the metric and the hard gate both skip it).
++        let needed = needed_crate(&code);
+         // ── 5. the idiomatic metric: clippy's own catalog over the emitted
+         // program. The count IS the score — no hand-written pattern list.
+-        match clippy_idioms(&code, &name, &scratch.join(&name).join("idiom")) {
+-            Ok(i) => idiom_total.add(i),
+-            Err(m) => {
+-                println!("{name:<20} IDIOM-UNAVAILABLE: {m}");
+-                failures += 1;
++        if needed.is_none() {
++            match clippy_idioms(&code, &name, &scratch.join(&name).join("idiom")) {
++                Ok(i) => idiom_total.add(i),
++                Err(m) => {
++                    println!("{name:<20} IDIOM-UNAVAILABLE: {m}");
++                    failures += 1;
++                }
+             }
+         }
+         for name in &promoted {
+@@ -805,7 +812,7 @@ fn main() {
+         let mut status;
+         if idiom_only {
+             status = "render-only".into();
+-        } else if let Some(krate) = needed_crate(&code) {
++        } else if let Some(krate) = needed {
+             status = format!("NEEDS-CRATE {krate}");
+         } else {
+             let dbg_dir = scratch.join(&name).join("dbg");
+diff --git a/src/bin/rust_fuzz.rs b/src/bin/rust_fuzz.rs
+index 2feb00850..bfa353496 100644
+--- a/src/bin/rust_fuzz.rs
++++ b/src/bin/rust_fuzz.rs
+@@ -44,6 +44,12 @@
+ //! prints `dead_case=` so this surface cannot silently disappear either. A
+ //! non-zero `rustc_fail` here is a failure, never an acceptable avoidance.
+ //!
++//! Every program is also linted with `clippy-driver` at the SAME strictness as
++//! the fixture gate (`-W clippy::pedantic -A <UNAVOIDABLE_PEDANTIC>
++//! -D warnings`) in both profiles, so a pedantic finding in generated code
++//! fails the net as `CLIPPY-FAIL` and is counted in `clippy_fail` — the net
++//! and the fixture gate agree on what "idiomatic" means.
++//!
+ //! The generator is deterministic (a seeded LCG). The seed is a first-class
+ //! input and every failing case is left on disk with the exact command that
+ //! replays it, so a failure is one command away from reproducing.
+@@ -444,11 +450,30 @@ fn run(
+     )
+ }
+ 
++/// The clippy binary that shares this rustc's sysroot (`cargo clippy` needs
++/// a manifest; the net lints one file, so the driver is the right tool).
++fn clippy_driver() -> Option<std::path::PathBuf> {
++    let out = Command::new("rustc")
++        .args(["--print", "sysroot"])
++        .output()
++        .ok()?;
++    if !out.status.success() {
++        return None;
++    }
++    let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
++    let driver = Path::new(&root).join("bin").join("clippy-driver");
++    driver.exists().then_some(driver)
++}
++
+ /// A divergence: which stage failed and what the two sides said.
+ enum Outcome {
+     Matched,
+     RenderFail(String),
+     RustcFail(String),
++    ClippyFail {
++        profile: &'static str,
++        msg: String,
++    },
+     Diverged {
+         profile: &'static str,
+         bash: (String, String, i32),
+@@ -469,6 +494,7 @@ fn check_one(src: &str, dir: &Path, profiles: &[&'static str]) -> Outcome {
+     // the bash side once: same bytes, its own scratch directory
+     let bash_dir = dir.join("run_bash");
+     let (b_out, b_err, b_rc) = run(&bash_dir, Path::new("bash"), Some(&sh), None);
++    let clippy = clippy_driver();
+     for profile in profiles {
+         let bin = dir.join(format!("main_{profile}"));
+         let mut cmd = Command::new("rustc");
+@@ -480,6 +506,32 @@ fn check_one(src: &str, dir: &Path, profiles: &[&'static str]) -> Outcome {
+         if !built.status.success() {
+             return Outcome::RustcFail(String::from_utf8_lossy(&built.stderr).to_string());
+         }
++        // clippy with the SAME strictness as the fixture gate: pedantic (a
++        // finding is a failure, not a data point) plus the documented
++        // unavoidable list, in both profiles.
++        if let Some(driver) = &clippy {
++            let mut cc = Command::new(driver);
++            cc.args(["--edition", "2021", "--error-format=short", "-W", "clippy::pedantic"]);
++            for lint in debashl::rust_backend::UNAVOIDABLE_PEDANTIC {
++                cc.arg("-A").arg(lint);
++            }
++            cc.args(["-D", "warnings"]);
++            if *profile == "release" {
++                cc.arg("-O");
++            }
++            let linted = cc
++                .arg("-o")
++                .arg(dir.join(format!("clippy_{profile}")))
++                .arg(&rs)
++                .output()
++                .expect("clippy-driver");
++            if !linted.status.success() {
++                return Outcome::ClippyFail {
++                    profile,
++                    msg: String::from_utf8_lossy(&linted.stderr).to_string(),
++                };
++            }
++        }
+         let (r_out, r_err, r_rc) =
+             run(&dir.join(format!("run_rust_{profile}")), &bin, None, Some(&sh));
+         let bash = (b_out.clone(), b_err.clone(), b_rc);
+@@ -504,6 +556,9 @@ fn show(case: &str, src: &str, outcome: &Outcome) {
+         Outcome::RustcFail(e) => {
+             println!("{case} RUSTC-FAIL\n{e}\n--- script ---\n{src}");
+         }
++        Outcome::ClippyFail { profile, msg } => {
++            println!("{case} CLIPPY-FAIL ({profile})\n{msg}\n--- script ---\n{src}");
++        }
+         Outcome::Diverged {
+             profile,
+             bash,
+@@ -605,7 +660,8 @@ fn main() {
+     }
+ 
+     let mut rng = Rng(seed);
+-    let (mut matched, mut diverged, mut render_fail, mut rustc_fail) = (0u64, 0u64, 0u64, 0u64);
++    let (mut matched, mut diverged, mut render_fail, mut rustc_fail, mut clippy_fail) =
++        (0u64, 0u64, 0u64, 0u64, 0u64);
+     // how many generated programs carry the readonly/unset case (its refused
+     // writes are the only ones whose `<prog>: line N:` stderr is compared)
+     let mut readonly_case = 0u64;
+@@ -632,6 +688,7 @@ fn main() {
+             Outcome::Matched => matched += 1,
+             Outcome::RenderFail(_) => render_fail += 1,
+             Outcome::RustcFail(_) => rustc_fail += 1,
++            Outcome::ClippyFail { .. } => clippy_fail += 1,
+             Outcome::Diverged { .. } => diverged += 1,
+         }
+         if !matches!(outcome, Outcome::Matched) {
+@@ -649,9 +706,10 @@ fn main() {
+     println!(
+         "rust_fuzz: seed={seed} profile={profile_label} programs={cases} matched={matched} \
+          diverged={diverged} render_fail={render_fail} rustc_fail={rustc_fail} \
+-         readonly_case={readonly_case} overflow_case={overflow_case} dead_case={dead_case}"
++         clippy_fail={clippy_fail} readonly_case={readonly_case} \
++         overflow_case={overflow_case} dead_case={dead_case}"
+     );
+-    if diverged + render_fail + rustc_fail > 0 {
++    if diverged + render_fail + rustc_fail + clippy_fail > 0 {
+         std::process::exit(1);
+     }
+ }
+diff --git a/src/render_ext_estree/handlers/mod.rs b/src/render_ext_estree/handlers/mod.rs
+index 032d7cd4e..8f75eb219 100644
+--- a/src/render_ext_estree/handlers/mod.rs
++++ b/src/render_ext_estree/handlers/mod.rs
+@@ -1,14 +1,14 @@
+ // @generated by build.rs — do not edit.
+-    pub(crate) mod deref;
+-    pub(crate) mod regexp_find;
+     pub(crate) mod address_of;
+-    pub(crate) mod affix_strip;
+-    pub(crate) mod spread;
+-    pub(crate) mod type_assert;
+-    pub(crate) mod map_literal;
+-    pub(crate) mod cutset_trim;
++    pub(crate) mod cgo_call;
+     pub(crate) mod clone_deep;
++    pub(crate) mod deref;
+     pub(crate) mod element_read;
+-    pub(crate) mod cgo_call;
+     pub(crate) mod field_read;
++    pub(crate) mod map_literal;
++    pub(crate) mod spread;
++    pub(crate) mod type_assert;
++    pub(crate) mod affix_strip;
++    pub(crate) mod cutset_trim;
++    pub(crate) mod regexp_find;
+ 
+diff --git a/src/render_ext_expr/handlers/mod.rs b/src/render_ext_expr/handlers/mod.rs
+index f654abf17..8267a52ba 100644
+--- a/src/render_ext_expr/handlers/mod.rs
++++ b/src/render_ext_expr/handlers/mod.rs
+@@ -1,26 +1,26 @@
+ // @generated by build.rs — do not edit.
+     pub(crate) mod all_nodes;
+-    pub(crate) mod array_len;
+-    pub(crate) mod string_trim;
+-    pub(crate) mod path_name;
+-    pub(crate) mod regexp_find;
+-    pub(crate) mod str_len;
+     pub(crate) mod affix_strip;
++    pub(crate) mod array_len;
+     pub(crate) mod case_transform;
+-    pub(crate) mod repeat_str;
+-    pub(crate) mod field_extract;
++    pub(crate) mod cgo_call;
++    pub(crate) mod char_extract;
+     pub(crate) mod char_translate;
+-    pub(crate) mod word_count;
+-    pub(crate) mod reg_count;
+-    pub(crate) mod string_contains;
+-    pub(crate) mod cutset_trim;
+     pub(crate) mod clone_deep;
+-    pub(crate) mod take_lines;
+-    pub(crate) mod reg_sub;
+-    pub(crate) mod sub_str_extract;
+-    pub(crate) mod string_affix;
+-    pub(crate) mod char_extract;
+-    pub(crate) mod cgo_call;
++    pub(crate) mod cutset_trim;
++    pub(crate) mod field_extract;
+     pub(crate) mod field_read;
++    pub(crate) mod path_name;
++    pub(crate) mod reg_count;
++    pub(crate) mod reg_sub;
++    pub(crate) mod regexp_find;
++    pub(crate) mod repeat_str;
+     pub(crate) mod split;
++    pub(crate) mod str_len;
++    pub(crate) mod string_affix;
++    pub(crate) mod string_contains;
++    pub(crate) mod string_trim;
++    pub(crate) mod sub_str_extract;
++    pub(crate) mod take_lines;
++    pub(crate) mod word_count;
+ 
+diff --git a/src/rust_backend.rs b/src/rust_backend.rs
+index 9a698f74d..33272055b 100644
+--- a/src/rust_backend.rs
++++ b/src/rust_backend.rs
+@@ -193,6 +193,14 @@ fn strip_word_coercion(t: &str) -> &str {
+     }
+ }
+ 
++/// The text of a simple string literal (`"abc"`, no escapes) — used to fold a
++/// constant interpolation part back into the format string it came from.
++fn plain_str_literal(s: &str) -> Option<String> {
++    let t = s.trim();
++    let inner = t.strip_prefix('"')?.strip_suffix('"')?;
++    (!inner.contains('\\') && !inner.contains('"')).then(|| inner.to_string())
++}
++
+ fn string_literal_word(w: &str) -> Option<&str> {
+     let base = strip_word_coercion(w.trim());
+     (base.len() >= 2 && base.starts_with('"') && base.ends_with('"')).then_some(base)
+@@ -1218,7 +1226,7 @@ fn strip_str_lit_refs(text: &str) -> String {
+ /// expansion.  Each rewrite is a pure textual peephole (no IR changes):
+ ///
+ /// * `__sh_len(&EXPR).to_string()` → `EXPR.chars().count().to_string()`
+-/// * `__sh_len(&EXPR)`  (no `.to_string()`) → `EXPR.chars().count() as i64`
++/// * `__sh_len(&EXPR)`  (no `.to_string()`) → `i64::try_from(EXPR.chars().count())`
+ /// * `__sh_env("LIT")`        → `std::env::var("LIT").unwrap_or_default()`  (always)
+ /// * `__sh_fexists("LIT")`     → `std::path::Path::new("LIT").exists()`  (always)
+ /// * `__sh_fdir("LIT")`        → `std::path::Path::new("LIT").is_dir()`  (always)
+@@ -1264,7 +1272,7 @@ fn inline_simple_helpers(
+                     continue;
+                 }
+                 let replacement = format!(
+-                    "{}.chars().count() as i64",
++                    "i64::try_from({}.chars().count()).unwrap_or(i64::MAX)",
+                     var_expr
+                 );
+                 out.replace_range(at..end, &replacement);
+@@ -2985,11 +2993,56 @@ fn inline_format_args(text: &str) -> String {
+         }
+         if n == idents.len() { Some(out) } else { None }
+     }
++    /// Length in bytes of the char literal at the start of `s` (`'a'`,
++    /// `'\\n'`, `'\\''`, `'"'`), or None when this apostrophe is not one.
++    fn char_literal_len(s: &str) -> Option<usize> {
++        let mut it = s.char_indices();
++        if it.next()?.1 != '\'' {
++            return None;
++        }
++        let (at, c) = it.next()?;
++        let mut k = at + c.len_utf8();
++        if c == '\\' {
++            let (at, e) = it.next()?;
++            k = at + e.len_utf8();
++            match e {
++                'u' if s[k..].starts_with('{') => {
++                    let close = k + 1 + s[k + 1..].find('}')?;
++                    k = close + 1;
++                }
++                'x' => {
++                    for _ in 0..2 {
++                        let (at, h) = s[k..].char_indices().next()?;
++                        k += at + h.len_utf8();
++                    }
++                }
++                _ => {}
++            }
++        }
++        s[k..].starts_with('\'').then(|| k + 1)
++    }
+     let mut out = String::with_capacity(text.len());
+     let mut i = 0usize;
+     let b = text.as_bytes();
+     while i < text.len() {
+         let c = b[i];
++        // A CHAR literal holding a quote (`'"'`, `'\\''`) must not open a
++        // string: the scanner would swallow everything up to the next `"`
++        // and every `format!` after that line would silently skip inlining.
++        if c == b'\'' {
++            match char_literal_len(&text[i..]) {
++                Some(n) => {
++                    out.push_str(&text[i..i + n]);
++                    i += n;
++                    continue;
++                }
++                None => {
++                    out.push('\'');
++                    i += 1;
++                    continue;
++                }
++            }
++        }
+         if c == b'"' {
+             // copy a string literal (escapes included)
+             let start = i;
+@@ -4282,6 +4335,29 @@ pub fn promoted_names(prog: &IrProgram) -> Vec<String> {
+     promoted
+ }
+ 
++/// Pedantic lints that GENERATED code cannot avoid — THE decision point for
++/// the hard `clippy -D warnings` gate.
++///
++/// Both gates run clippy as `-W clippy::pedantic -A <these> -D warnings` in
++/// debug and `-O`, so any finding outside this list fails the build; the
++/// idiom metric (`rust_fixtures`) keeps counting every pedantic finding,
++/// including these, so the measurement itself is not narrowed. The list has
++/// ONE entry, and adding to it is a decision to record here:
++///
++/// * `clippy::too_many_lines` (threshold 100) counts the length of an emitted
++///   FUNCTION. `fn main` is exactly as long as the shell script it was
++///   generated from (`22_vars_store` renders 332 lines), and the native ERE
++///   matcher (142) and `__sh_printf` (109) are single state machines with no
++///   natural seam. No emitted-text fix exists: shortening `main` means
++///   chunking a straight-line body into synthetic sub-functions, which cannot
++///   preserve `let` scoping, `break`/`return` targets, `'unwind` blocks and
++///   redirect guards; splitting the two interpreters would rewrite their
++///   control flow for no reader's benefit. What it would take: a
++///   body-chunking scheme in the renderer (per-block functions with an
++///   explicit continuation) plus helper sub-function splitting — a different
++///   emission architecture, not a lint fix.
++pub const UNAVOIDABLE_PEDANTIC: &[&str] = &["clippy::too_many_lines"];
++
+ /// A rendered program plus the printf census the fixture harness reports:
+ /// call sites the literal-format specialization decomposed at render time,
+ /// and call sites left on the `__sh_printf` interpreter (the count of
+@@ -6233,7 +6309,7 @@ impl Render {
+         // LOCAL ARRAY: the length is a compile-time constant.
+         if self.is_local_array(name) {
+             let n = self.const_len_arrays.get(name).copied().unwrap_or(0);
+-            return format!("{n}i64");
++            return format!("{}i64", group_digits(&n.to_string()));
+         }
+         let m = self.tls(name);
+         format!("__sh_v_len({m})")
+@@ -6692,7 +6768,7 @@ impl Render {
+ 
+     fn arith_bigint_inner(&mut self, a: &ArithAst) -> String {
+         match a {
+-            ArithAst::Num(n) => format!("num_bigint::BigInt::from({}i64)", n),
++            ArithAst::Num(n) => format!("num_bigint::BigInt::from({}i64)", group_digits(&n.to_string())),
+             ArithAst::Var(n) | ArithAst::Ident(n) => {
+                 // bigint Str var (decimal text) → parse; Int var → from.
+                 if self.bigint_vars.contains(n) {
+@@ -6873,17 +6949,17 @@ impl Render {
+                 if *b { "true".into() } else { "false".into() }
+             }
+             IrExpr::Int(i) => format!("({} != 0)", int_lit(*i)),
+-            IrExpr::Str(s, _) => format!("(!{}.is_empty())", Self::rust_str_expr(s)),
++            IrExpr::Str(s, _) => format!("__sh_nonempty(&{})", Self::rust_str_expr(s)),
+             IrExpr::Var(name, _) | IrExpr::Ident(name) => {
+                 if self.declared(name) || self.captured.contains_key(name) {
+                     if self.is_num(name) {
+                         format!("({} != 0)", self.read_num(name))
+                     } else {
+-                        format!("(!{}.is_empty())", self.read_str(name))
++                        format!("__sh_nonempty(&{})", self.read_str(name))
+                     }
+                 } else {
+                     let s = self.getvar_str(name);
+-                    format!("(!{s}.is_empty())")
++                    format!("__sh_nonempty(&{s})")
+                 }
+             }
+             IrExpr::BinOp { lhs, op, rhs } => match op {
+@@ -7003,11 +7079,11 @@ impl Render {
+                         if self.is_num(name) {
+                             format!("({} != 0)", self.read_num(name))
+                         } else {
+-                            format!("(!{}.is_empty())", self.read_str(name))
++                            format!("__sh_nonempty(&{})", self.read_str(name))
+                         }
+                     } else {
+                         let s = self.getvar_str(name);
+-                        format!("(!{s}.is_empty())")
++                        format!("__sh_nonempty(&{s})")
+                     }
+                 } else {
+                     "false".to_string()
+@@ -7015,7 +7091,7 @@ impl Render {
+             }
+             IrExpr::Call { func, args } if func == "exec" || func == "builtin" => self.exec_bool(args),
+             IrExpr::Call { func, args } if func == "capture" => {
+-                format!("(!{}.is_empty())", self.capture_expr(args))
++                format!("__sh_nonempty(&{})", self.capture_expr(args))
+             }
+             IrExpr::Call { func, args } if func == "block" => self.block_bool(args),
+             IrExpr::Call { func, args } if func == "redirect" => self.redirect_bool(args),
+@@ -7234,7 +7310,7 @@ impl Render {
+                 "StrLen" => {
+                     let x = n.as_any().downcast_ref::<crate::shir_nodes::StrLen>()
+                         .expect("tag/type agree");
+-                    format!("({}.len() as i64)", self.expr_str(&x.text))
++                    format!("i64::try_from({}.len()).unwrap_or(i64::MAX)", self.expr_str(&x.text))
+                 }
+                 "CaseTransform" => {
+                     let x = n.as_any().downcast_ref::<crate::shir_nodes::CaseTransform>()
+@@ -7273,21 +7349,38 @@ impl Render {
+                     raw.push_str(s);
+                 }
+                 InterpPart::Expr(x) => {
+-                    fmt.push_str("{}");
+                     // A numerically-homed part IS an i64: `{}` formats it
+                     // directly, so the `.to_string()` `expr_any` would add
+                     // is a redundant allocation (t69's
+                     // `format!("value={}", x.to_string())`).
+-                    if self.word_is_numeric(x) {
+-                        args.push(self.expr_num(x));
++                    let arg = if self.word_is_numeric(x) {
++                        self.expr_num(x)
+                     } else {
+-                        args.push(self.expr_any(x));
++                        self.expr_any(x)
++                    };
++                    // A part that renders as a CONSTANT string is text, so
++                    // fold it into the format string: `format!("end {}",
++                    // "0")` is `format!("end 0")` (clippy's "literal with an
++                    // empty format string" says the same thing).
++                    if let Some(lit) = plain_str_literal(&arg) {
++                        fmt.push_str(&lit.replace('{', "{{").replace('}', "}}"));
++                        raw.push_str(&lit);
++                        continue;
+                     }
++                    fmt.push_str("{}");
++                    args.push(arg);
+                 }
+             }
+         }
+         if args.is_empty() {
+             Self::rust_str_expr(&raw)
++        } else if args.len() == 1 && fmt == "{}" {
++            // one part, no literal text: `format!("{}", x)` IS `x.to_string()`
++            if args[0].ends_with(".to_string()") {
++                args.swap_remove(0)
++            } else {
++                format!("({}).to_string()", args[0])
++            }
+         } else {
+             format!("format!({}, {})", Self::rust_fmt(&fmt), args.join(", "))
+         }
+@@ -7522,7 +7615,7 @@ impl Render {
+             && body.bytes().all(|b| b.is_ascii_digit())
+             && (t.len() == body.len() || t.starts_with('-'))
+         {
+-            return format!("{t}i64");
++            return format!("{}i64", group_digits(t));
+         }
+         t.to_string()
+     }
+@@ -7960,7 +8053,7 @@ impl Render {
+                             "__sh_v_set_i({m}, __v.trim().parse::<i64>().unwrap_or(0))"
+                         )
+                     } else {
+-                        format!("__sh_v_set_s({m}, __v.trim().to_string())")
++                        format!("__sh_v_set_s({m}, __v.trim())")
+                     };
+                     assigns.push(format!(
+                         "if __n == {} {{ let __v = __val.trim_matches(|c| c == '\\'' || c == '\\\"'); {st}; }}",
+@@ -10255,7 +10348,7 @@ impl Render {
+         self.loop_depth -= 1;
+         self.emit("}");
+         self.emit(&format!(
+-            "if !{ran} {{ __SH_RC.store(0, Ordering::SeqCst); }} else {{ __SH_RC.store({last}, Ordering::SeqCst); }}"
++            "if {ran} {{ __SH_RC.store({last}, Ordering::SeqCst); }} else {{ __SH_RC.store(0, Ordering::SeqCst); }}"
+         ));
+         let block = self.out.join("\n");
+         self.out = saved;
+@@ -10263,6 +10356,24 @@ impl Render {
+         format!("{{\n{block}\n}}")
+     }
+ 
++    /// An `if`/`while` condition, hoisted when it is a BLOCK expression.
++    ///
++    /// `clippy::blocks_in_conditions` is right about generated code too: a
++    /// block in condition position hides what is tested, and the hoisted form
++    /// is what the shell reads as (`if cmd; then` → `let ok = { cmd }; if ok`).
++    /// A block condition cannot be simplified textually — it is what a command
++    /// lowered to — so the emitter binds it first.
++    fn cond_hoisted(&mut self, cond: &str) -> String {
++        let t = Self::unparen(cond).trim().to_string();
++        if t.starts_with('{') {
++            let g = self.gensym("__sh_ok");
++            self.emit(&format!("let {g} = {t};"));
++            g
++        } else {
++            t
++        }
++    }
++
+     /// A list of statements as a condition (the last statement's rc).
+     fn cond_block(&mut self, stmts: &[IrStmt]) -> String {
+         if stmts.len() == 1 {
+@@ -11194,7 +11305,7 @@ impl Render {
+             let idx_g = self.gensym("__sh_ci");
+             self.emit(&format!("let mut {idx_g}: usize = 0;"));
+             self.emit("loop {");
+-            self.emit(&format!("if !({idx_g} < {items_g}.len()) {{ break; }}"));
++            self.emit(&format!("if {idx_g} >= {items_g}.len() {{ break; }}"));
+             self.loop_depth += 1;
+             self.depth += 1;
+             // bind loop var (string; numeric reads parse on demand)
+@@ -11209,7 +11320,8 @@ impl Render {
+                     IrExpr::Call { func, args } if func == "test" => self.test_call_bool(args),
+                     _ => self.expr_bool(c),
+                 };
+-                self.emit(&format!("if {} {{", Self::unparen(&b)));
++                let b = self.cond_hoisted(&b);
++                self.emit(&format!("if {b} {{"));
+                 self.depth += 1;
+             }
+             // push elem
+@@ -12820,8 +12932,9 @@ impl Render {
+                     self.subshell_render(&stmts);
+                 }
+                 IrExpr::BinOp { lhs, op: BinOpKind::And, rhs } => {
+-                    let l = self.expr_bool(lhs);
+-                    self.emit(&format!("if {} {{", Self::unparen(&l)));
++                    let l0 = self.expr_bool(lhs);
++                    let l = self.cond_hoisted(&l0);
++                    self.emit(&format!("if {l} {{"));
+                     self.depth += 1;
+                     self.expr_stmt_value(rhs);
+                     self.depth -= 1;
+@@ -13375,7 +13488,8 @@ impl Render {
+                         }
+                     }
+                 } else {
+-                    self.emit(&format!("if {} {{", Self::unparen(&c)));
++                    let c = self.cond_hoisted(&c);
++                    self.emit(&format!("if {c} {{"));
+                     self.depth += 1;
+                     self.unwind_begin();
+                     for s in then {
+@@ -13477,7 +13591,7 @@ impl Render {
+                 self.emit("}");
+                 if track {
+                     self.emit(&format!(
+-                        "if !{ran} {{ __SH_RC.store(0, Ordering::SeqCst); }} else {{ __SH_RC.store({last}, Ordering::SeqCst); }}"
++                        "if {ran} {{ __SH_RC.store({last}, Ordering::SeqCst); }} else {{ __SH_RC.store(0, Ordering::SeqCst); }}"
+                     ));
+                 }
+             }
+@@ -13500,7 +13614,8 @@ impl Render {
+                 self.unwind_loop_end();
+                 self.depth -= 1;
+                 self.loop_depth -= 1;
+-                let c = self.expr_bool(cond);
++                let c0 = self.expr_bool(cond);
++                let c = self.cond_hoisted(&c0);
+                 if *until {
+                     self.emit(&format!("if {c} {{ break; }}"));
+                 } else {
+@@ -13616,7 +13731,7 @@ impl Render {
+                         // t58_seq_range, zsh/posix t58_seq_range)
+                         self.emit(&format!("{init}; // for {var} in {start}..={end}"));
+                         let cond = self.read_num(var);
+-                        self.emit(&format!("loop {{ if !({cond} <= {end}) {{ break; }}"));
++                        self.emit(&format!("loop {{ if {cond} > {end} {{ break; }}"));
+                         self.loop_depth += 1;
+                         self.depth += 1;
+                         self.unwind_begin();
+@@ -13872,7 +13987,7 @@ impl Render {
+                         // `loop` so a body `continue` still runs the
+                         // index increment (bash's for-iteration)
+                         self.emit(&format!("loop {{"));
+-                        self.emit(&format!("if !({idx_g} < {items_g}.len()) {{ break; }}"));
++                        self.emit(&format!("if {idx_g} >= {items_g}.len() {{ break; }}"));
+                         self.loop_depth += 1;
+                         self.depth += 1;
+                         if self.is_num(var) {
+@@ -13977,6 +14092,7 @@ impl Render {
+                 let dg = self.gensym("__sh_case");
+                 self.emit(&format!("let {dg} = {d};"));
+                 let mut first = true;
++                let mut catch_all = false;
+                 for c in clauses {
+                     // patterns arrive as source text — unwrap a fully
+                     // quoted pattern (`""` matches the empty string;
+@@ -14008,6 +14124,7 @@ impl Render {
+                         })
+                         .collect();
+                     let is_default = pats.is_empty();
++                    catch_all |= is_default;
+                     let cond = if is_default {
+                         "true".to_string()
+                     } else {
+@@ -14022,7 +14139,8 @@ impl Render {
+                         format!("({alts})")
+                     };
+                     if first {
+-                        self.emit(&format!("if {} {{", Self::unparen(&cond)));
++                        let cond = self.cond_hoisted(&cond);
++                        self.emit(&format!("if {cond} {{"));
+                         first = false;
+                     } else {
+                         self.emit(&format!("}} else if {cond} {{"));
+@@ -14033,8 +14151,10 @@ impl Render {
+                     }
+                     self.depth -= 1;
+                 }
+-                if first {
+-                    // no clauses at all — nothing
++                if first || catch_all {
++                    // no clauses at all, or a catch-all arm already took
++                    // every path — the no-match branch would be dead code
++                    // (and an empty `else` is `clippy::needless_else`)
+                 } else {
+                     // no pattern matched — bash's case rc is 0
+                     self.emit("} else {");
+@@ -14149,7 +14269,7 @@ impl Render {
+                 // `if !ran { } else { }` once the stores are stripped.
+                 if !crate::shir::stmt_status_write_is_unread(s) {
+                     self.emit(&format!(
+-                        "if !{ran} {{ __SH_RC.store(0, Ordering::SeqCst); }} else {{ __SH_RC.store({last}, Ordering::SeqCst); }}"
++                        "if {ran} {{ __SH_RC.store({last}, Ordering::SeqCst); }} else {{ __SH_RC.store(0, Ordering::SeqCst); }}"
+                     ));
+                 }
+             }
+@@ -14171,15 +14291,20 @@ impl Render {
+                     }
+                     None => "std::io::BufRead::lines(std::io::BufReader::new(__sh_f))".to_string(),
+                 };
+-                self.emit(&format!("match std::fs::File::open({}) {{", src));
++                // `File::open` takes `AsRef<Path>`, so the word's `.to_string()`
++                // is an allocation nothing reads (`clippy::unnecessary_to_owned`).
++                self.emit(&format!("match std::fs::File::open({}) {{", strip_word_coercion(&src)));
+                 self.depth += 1;
+                 self.emit("Ok(__sh_f) => {");
+                 self.depth += 1;
+-                self.emit(&format!("for {} in {}.flatten() {{", fl.var, iter));
++                // `flatten()` over `Result` items is `filter_map(ok)` — spelled
++                // out, because clippy is right that the bare `flatten` looks
++                // like it could loop forever on a repeated `Err`.
++                self.emit(&format!("for {} in {}.filter_map(std::result::Result::ok) {{", fl.var, iter));
+                 self.depth += 1;
+                 // the loop name lives in the ONE store like every other
+                 // unpromoted variable
+-                self.emit(&format!("__sh_v_set_s({m}, {}.clone());", fl.var));
++                self.emit(&format!("__sh_v_set_s({m}, {});", fl.var));
+                 for b in &fl.body {
+                     self.stmt(b);
+                 }
+@@ -14877,6 +15002,7 @@ impl Render {
+                 ("__sh_v_m_values(", "vars_m"),
+                 ("__sh_v_m_remove(", "vars_m"),
+                 ("__sh_v_len(", "vars_len"),
++                ("__sh_nonempty(", "nonempty"),
+             ] {
+                 if body_text.contains(pat) {
+                     self.add_helper(h);
+@@ -15002,7 +15128,7 @@ const HELPER_ORDER: &[&str] = &[
+     // the wrapping arithmetic helpers `Render::num_binop` emits (bash's
+     // 64-bit wrap; a plain operator panics in a debug build)
+     "add", "sub", "mul", "neg", "shl", "shr",
+-    "q", "q_printf", "wq", "cat", "pow", "echo_esc", "printf_b", "atoi", "atou", "atof", "print_words", "print_words_noesc", "puts", "printf",
++    "q", "q_printf", "wq", "cat", "pow", "echo_esc", "printf_b", "atoi", "atou", "atof", "print_words", "print_words_noesc", "puts", "nonempty", "printf",
+     "cap_bytes", "capture_rc", "spawn", "pipe", "run", "readline", "read_fields", "split_ifs",
+     "fnmatch", "globlike", "strippre", "stripsuf", "replace", "substr", "case", "len", "basename",
+     "dirname", "env", "arg", "glob", "brace", "sleep", "rand", "grepmatches", "regex", "re_ere",
+@@ -15149,6 +15275,7 @@ fn helper_source(h: &str) -> &'static str {
+     }
+     if ansi {
+         // control chars — bash switches to $'...' ANSI-C quoting
++        use std::fmt::Write as _;
+         let mut body = String::new();
+         for c in s.chars() {
+             match c {
+@@ -15157,7 +15284,7 @@ fn helper_source(h: &str) -> &'static str {
+                 '\r' => body.push_str("\\r"),
+                 '\'' => body.push_str("\\'"),
+                 '\\' => body.push_str("\\\\"),
+-                c if (c as u32) < 32 || c as u32 == 127 => body.push_str(&format!("\\x{:02x}", c as u32)),
++                c if (c as u32) < 32 || c as u32 == 127 => { let _ = write!(body, "\\x{:02x}", c as u32); }
+                 _ => body.push(c),
+             }
+         }
+@@ -15233,40 +15360,40 @@ fn helper_source(h: &str) -> &'static str {
+         // __sh_echo_esc (the printf body calls __sh_printf_b, which the
+         // helper prune drops when unreferenced).
+         "printf_b" => r#"fn __sh_printf_b(s: &str) -> String { __sh_echo_esc(s) }"#,
+-        "echo_esc" => r#"fn __sh_echo_esc(s: &str) -> String {
+-    let mut o = String::new();
+-    let ch: Vec<char> = s.chars().collect();
+-    let mut i = 0;
+-    while i < ch.len() {
+-        if ch[i] == '\\' && i + 1 < ch.len() {
+-            i += 1;
+-            match ch[i] {
+-                'n' => o.push('\n'), 't' => o.push('\t'), 'r' => o.push('\r'),
+-                'a' => o.push('\x07'), 'b' => o.push('\x08'), 'f' => o.push('\x0c'),
+-                'v' => o.push('\x0b'), 'e' => o.push('\x1b'), '\\' => o.push('\\'),
+-                'c' => return o,
++        "echo_esc" => r#"fn __sh_echo_esc(text: &str) -> String {
++    let mut out = String::new();
++    let chars: Vec<char> = text.chars().collect();
++    let mut idx = 0;
++    while idx < chars.len() {
++        if chars[idx] == '\\' && idx + 1 < chars.len() {
++            idx += 1;
++            match chars[idx] {
++                'n' => out.push('\n'), 't' => out.push('\t'), 'r' => out.push('\r'),
++                'a' => out.push('\x07'), 'b' => out.push('\x08'), 'f' => out.push('\x0c'),
++                'v' => out.push('\x0b'), 'e' => out.push('\x1b'), '\\' => out.push('\\'),
++                'c' => return out,
+                 '0'..='7' => {
+-                    let mut n = 0; let mut k = 0;
+-                    while k < 3 && i + k < ch.len() && ch[i + k].is_ascii_digit() && ch[i + k] <= '7' {
+-                        n = n * 8 + (ch[i + k] as u32 - '0' as u32); k += 1;
++                    let mut num = 0; let mut nk = 0;
++                    while nk < 3 && idx + nk < chars.len() && chars[idx + nk].is_ascii_digit() && chars[idx + nk] <= '7' {
++                        num = num * 8 + (chars[idx + nk] as u32 - '0' as u32); nk += 1;
+                     }
+-                    o.push(char::from_u32(n & 0xff).unwrap_or('\0'));
+-                    i += k - 1;
++                    out.push(char::from_u32(num & 0xff).unwrap_or('\0'));
++                    idx += nk - 1;
+                 }
+                 'x' => {
+-                    let mut n = 0; let mut k = 0;
+-                    while k < 2 && i + 1 + k < ch.len() && ch[i + 1 + k].is_ascii_hexdigit() {
+-                        n = n * 16 + ch[i + 1 + k].to_digit(16).unwrap(); k += 1;
++                    let mut num = 0; let mut nk = 0;
++                    while nk < 2 && idx + 1 + nk < chars.len() && chars[idx + 1 + nk].is_ascii_hexdigit() {
++                        num = num * 16 + chars[idx + 1 + nk].to_digit(16).unwrap(); nk += 1;
+                     }
+-                    if k > 0 { o.push(char::from_u32(n).unwrap_or('\0')); i += k; }
+-                    else { o.push('x'); }
++                    if nk > 0 { out.push(char::from_u32(num).unwrap_or('\0')); idx += nk; }
++                    else { out.push('x'); }
+                 }
+-                c => { o.push('\\'); o.push(c); }
++                lit => { out.push('\\'); out.push(lit); }
+             }
+-            i += 1;
+-        } else { o.push(ch[i]); i += 1; }
++            idx += 1;
++        } else { out.push(chars[idx]); idx += 1; }
+     }
+-    o
++    out
+ }"#,
+         "atoi" => r#"fn __sh_atoi(s: &str) -> i64 {
+     let t = s.trim();
+@@ -15310,7 +15437,7 @@ fn helper_source(h: &str) -> &'static str {
+         b.extend_from_slice(s.as_bytes());
+         return;
+     }
+-    print!("{}", s);
++    print!("{s}");
+ }"#,
+         // Same signature and call sites as `print_words`, but with the
+         // `-e` branch compiled out: emitted when no echo in the program
+@@ -15343,8 +15470,13 @@ fn helper_source(h: &str) -> &'static str {
+         b.extend_from_slice(s.as_bytes());
+         return;
+     }
+-    print!("{}", s);
++    print!("{s}");
+ }"#,
++        "nonempty" => r#"/// The `[ -n WORD ]` / `[ WORD ]` test as a named predicate: spelled
++/// `!word.is_empty()` inline it makes every `if`/`else` over it a
++/// `clippy::if_not_else` finding, and the negation is the test, not a typo.
++fn __sh_nonempty(s: &str) -> bool { !s.is_empty() }
++"#,
+         "puts" => r#"fn __sh_puts(s: &str) {
+     // constant-echo path for a program that DOES use a redirect/capture
+     // sink: the caller has already joined the words and applied -n/-e,
+@@ -15358,7 +15490,7 @@ fn helper_source(h: &str) -> &'static str {
+         b.extend_from_slice(s.as_bytes());
+         return;
+     }
+-    print!("{}", s);
++    print!("{s}");
+ }"#,
+         "printf" => r#"fn __sh_printf(fmt: &str, args: &[Word]) -> String {
+     let mut out = String::new();
+@@ -15397,41 +15529,42 @@ fn helper_source(h: &str) -> &'static str {
+                 continue;
+             }
+             if c == '%' && i + 1 < ch.len() {
+-                let mut j = i + 1;
++                let mut jp = i + 1;
+                 let mut flags = String::new();
+-                while j < ch.len() && "-+ 0#".contains(ch[j]) { flags.push(ch[j]); j += 1; }
++                while jp < ch.len() && "-+ 0#".contains(ch[jp]) { flags.push(ch[jp]); jp += 1; }
+                 let mut width = String::new();
+-                while j < ch.len() && ch[j].is_ascii_digit() { width.push(ch[j]); j += 1; }
++                while jp < ch.len() && ch[jp].is_ascii_digit() { width.push(ch[jp]); jp += 1; }
+                 let mut prec: Option<String> = None;
+-                if j < ch.len() && ch[j] == '.' {
+-                    j += 1;
++                if jp < ch.len() && ch[jp] == '.' {
++                    jp += 1;
+                     let mut p = String::new();
+-                    while j < ch.len() && ch[j].is_ascii_digit() { p.push(ch[j]); j += 1; }
++                    while jp < ch.len() && ch[jp].is_ascii_digit() { p.push(ch[jp]); jp += 1; }
+                     prec = Some(p);
+                 }
+                 // C LENGTH MODIFIERS (`%lld`, `%zu`, `%hhd`) — skip them:
+                 // an unconsumed 'l' leaked into the output verbatim
+                 // (corpus-c 008_sized_ints printed "4000000000ld")
+-                while j < ch.len() && "lhLzjt".contains(ch[j]) { j += 1; }
+-                if j >= ch.len() { out.push('%'); break; }
+-                let conv = ch[j];
+-                i = j + 1;
++                while jp < ch.len() && "lhLzjt".contains(ch[jp]) { jp += 1; }
++                if jp >= ch.len() { out.push('%'); break; }
++                let conv = ch[jp];
++                i = jp + 1;
+                 if conv == '%' { out.push('%'); continue; }
+                 let arg = args.get(ai).map(ToString::to_string).unwrap_or_default();
+                 ai += 1;
+-                let w: usize = width.parse().unwrap_or(0);
++                let want: usize = width.parse().unwrap_or(0);
+                 let left = flags.contains('-');
+                 let zero = flags.contains('0');
+-                let p = prec.as_ref().map(|s| s.parse().unwrap_or(0)).unwrap_or(-1);
++                let p = prec.as_ref().map_or(-1, |s| s.parse().unwrap_or(0));
++                let pu = usize::try_from(p).unwrap_or(0);
+                 let mut piece;
+                 match conv {
+                     's' => {
+                         piece = arg.clone();
+-                        if p >= 0 { piece = piece.chars().take(p as usize).collect(); }
++                        if p >= 0 { piece = piece.chars().take(pu).collect(); }
+                     }
+                     'b' => {
+                         piece = __sh_printf_b(&arg);
+-                        if p >= 0 { piece = piece.chars().take(p as usize).collect(); }
++                        if p >= 0 { piece = piece.chars().take(pu).collect(); }
+                     }
+                     'q' => { piece = __sh_q_printf(&arg); }
+                     'c' => { piece = arg.chars().next().map(|c| c.to_string()).unwrap_or_default(); }
+@@ -15440,29 +15573,24 @@ fn helper_source(h: &str) -> &'static str {
+                     'o' => { piece = format!("{:o}", __sh_atou(&arg)); }
+                     'x' => { piece = format!("{:x}", __sh_atou(&arg)); }
+                     'X' => { piece = format!("{:X}", __sh_atou(&arg)); }
+-                    'f' | 'F' => {
++                    'f' | 'F' | 'g' | 'G' => {
+                         let fv = __sh_atof(&arg);
+-                        let p2 = if p < 0 { 6 } else { p as usize };
+-                        piece = format!("{:.*}", p2, fv);
++                        let p2 = if p < 0 { 6 } else { pu };
++                        piece = format!("{fv:.p2$}");
+                     }
+                     'e' | 'E' => {
+                         let fv = __sh_atof(&arg);
+-                        let p2 = if p < 0 { 6 } else { p as usize };
+-                        piece = format!("{:.*e}", p2, fv);
++                        let p2 = if p < 0 { 6 } else { pu };
++                        piece = format!("{fv:.p2$e}");
+                         if conv == 'E' { piece = piece.to_uppercase(); }
+                     }
+-                    'g' | 'G' => {
+-                        let fv = __sh_atof(&arg);
+-                        let p2 = if p < 0 { 6 } else { p as usize };
+-                        piece = format!("{:.*}", p2, fv);
+-                    }
+                     _ => { piece = arg.clone(); }
+                 }
+-                if w > piece.chars().count() {
+-                    let pad = w - piece.chars().count();
+-                    if left { piece = format!("{}{}", piece, " ".repeat(pad)); }
+-                    else if zero { piece = format!("{}{}", "0".repeat(pad), piece); }
+-                    else { piece = format!("{}{}", " ".repeat(pad), piece); }
++                if want > piece.chars().count() {
++                    let pad = want - piece.chars().count();
++                    if left { piece = format!("{piece}{}", " ".repeat(pad)); }
++                    else if zero { piece = format!("{}{piece}", "0".repeat(pad)); }
++                    else { piece = format!("{}{piece}", " ".repeat(pad)); }
+                 }
+                 out.push_str(&piece);
+                 continue;
+@@ -15488,7 +15616,7 @@ fn helper_source(h: &str) -> &'static str {
+     c.arg("-c").arg(cmd);
+     c.stdout(std::process::Stdio::piped());
+     if input.is_some() { c.stdin(std::process::Stdio::piped()); }
+-    let mut ch = match c.spawn() { Ok(x) => x, Err(_) => return Vec::new() };
++    let Ok(mut ch) = c.spawn() else { return Vec::new() };
+     if let Some(data) = input {
+         if let Some(mut si) = ch.stdin.take() { let _ = std::io::Write::write_all(&mut si, data); }
+     }
+@@ -15504,12 +15632,12 @@ fn helper_source(h: &str) -> &'static str {
+     c.arg("-c").arg(cmd);
+     c.stdout(std::process::Stdio::piped());
+     c.stdin(std::process::Stdio::inherit());
+-    let mut ch = match c.spawn() { Ok(x) => x, Err(_) => return (String::new(), 1) };
++    let Ok(mut ch) = c.spawn() else { return (String::new(), 1) };
+     let mut out = Vec::new();
+     if let Some(mut so) = ch.stdout.take() {
+         let _ = std::io::Read::read_to_end(&mut so, &mut out);
+     }
+-    let rc = ch.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
++    let rc = ch.wait().map_or(1, |s| s.code().unwrap_or(1));
+     let mut s = String::from_utf8_lossy(&out).to_string();
+     while s.ends_with('\n') { s.pop(); }
+     (s, rc)
+@@ -15731,8 +15859,8 @@ fn __sh_vw_i<R>(name: &str, f: impl FnOnce(&std::cell::Cell<i64>) -> R) -> R {
+         "vars_s" => r#"fn __sh_v_s(name: &str) -> String {
+     match __sh_v_get(name) { Some(v) => v.val.text(), None => String::new() }
+ }
+-fn __sh_v_set_s<T: ToString>(name: &str, v: T) {
+-    __sh_v_put(name, __ShVal { s: v.to_string(), ..__ShVal::default() });
++fn __sh_v_set_s(name: &str, v: impl Into<String>) {
++    __sh_v_put(name, __ShVal { s: v.into(), ..__ShVal::default() });
+ }
+ fn __sh_vw_s<R>(name: &str, f: impl FnOnce(&std::cell::RefCell<String>) -> R) -> R {
+     let tmp = std::cell::RefCell::new(__sh_v_s(name));
+@@ -15836,10 +15964,10 @@ fn __sh_vw_m<R>(name: &str, f: impl FnOnce(&std::cell::RefCell<std::collections:
+ fn __sh_v_len(name: &str) -> i64 {
+     match __sh_v_get(name) {
+         Some(v) => {
+-            if let Some(w) = &v.val.words { return w.len() as i64; }
+-            if let Some(n) = &v.val.ints { return n.len() as i64; }
+-            if let Some(m) = &v.val.assoc { return m.len() as i64; }
+-            v.val.text().len() as i64
++            if let Some(w) = &v.val.words { return i64::try_from(w.len()).unwrap_or(i64::MAX); }
++            if let Some(n) = &v.val.ints { return i64::try_from(n.len()).unwrap_or(i64::MAX); }
++            if let Some(m) = &v.val.assoc { return i64::try_from(m.len()).unwrap_or(i64::MAX); }
++            i64::try_from(v.val.text().chars().count()).unwrap_or(i64::MAX)
+         }
+         None => 0,
+     }
+@@ -15893,7 +16021,7 @@ fn __sh_v_len(name: &str) -> i64 {
+             c.stdin(std::process::Stdio::from(p));
+         }
+         if i < last || sink.is_some() || want_out { c.stdout(std::process::Stdio::piped()); }
+-        let mut ch = match c.spawn() { Ok(x) => x, Err(_) => { spawn_err = true; break; } };
++        let Ok(mut ch) = c.spawn() else { spawn_err = true; break; };
+         if i == 0 {
+             if let Some(data) = input.take() {
+                 if let Some(mut si) = ch.stdin.take() { let _ = std::io::Write::write_all(&mut si, &data); }
+@@ -15913,8 +16041,8 @@ fn __sh_v_len(name: &str) -> i64 {
+     // bash gives PIPESTATUS one entry per stage; the last stage's status is
+     // the pipeline's `$?`
+     let mut statuses: Vec<i32> = Vec::new();
+-    for ch in children.iter_mut() {
+-        statuses.push(ch.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1));
++    for ch in &mut children {
++        statuses.push(ch.wait().map_or(1, |s| s.code().unwrap_or(1)));
+     }
+     {
+         let mut ps = __SH_PIPESTATUS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+@@ -15968,7 +16096,7 @@ fn __sh_v_len(name: &str) -> i64 {
+         }
+     }
+     if input.is_some() { c.stdin(std::process::Stdio::piped()); }
+-    let mut ch = match c.spawn() { Ok(x) => x, Err(_) => return 1 };
++    let Ok(mut ch) = c.spawn() else { return 1 };
+     if let Some(data) = input {
+         if let Some(mut si) = ch.stdin.take() { let _ = std::io::Write::write_all(&mut si, &data); }
+     }
+@@ -15976,7 +16104,7 @@ fn __sh_v_len(name: &str) -> i64 {
+     if let Some(mut so) = ch.stdout.take() {
+         let _ = std::io::Read::read_to_end(&mut so, &mut out);
+     }
+-    let rc = ch.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
++    let rc = ch.wait().map_or(1, |s| s.code().unwrap_or(1));
+     if !out.is_empty() {
+         let mut used = false;
+         __SH_OUTFILE_TL.with(|v| { if let Some(f) = v.borrow_mut().as_mut() { let _ = std::io::Write::write_all(f, &out); used = true; } });
+@@ -16008,13 +16136,12 @@ fn __sh_v_len(name: &str) -> i64 {
+     let mut r = src;
+     loop {
+         match r.read(&mut one) {
+-            Ok(0) => break,
++            Ok(0) | Err(_) => break,
+             Ok(_) => {
+                 if one[0] == b'\n' { any = true; break; }
+                 buf.push(one[0]);
+                 any = true;
+             }
+-            Err(_) => break,
+         }
+     }
+     *__SH_STDIN.lock().unwrap() = Some(r);
+@@ -16074,9 +16201,6 @@ fn __sh_v_len(name: &str) -> i64 {
+     // bash's pattern matcher treats the pattern as a C string — a NUL
+     // truncates it (so `*$'\x00'*` is effectively just `*` and always
+     // matches)
+-    let pat = pat.split('\0').next().unwrap_or(pat);
+-    let p: Vec<char> = pat.chars().collect();
+-    let t: Vec<char> = s.chars().collect();
+     fn m(p: &[char], t: &[char]) -> bool {
+         if p.is_empty() { return t.is_empty(); }
+         match p[0] {
+@@ -16103,7 +16227,7 @@ fn __sh_v_len(name: &str) -> i64 {
+                     }
+                 }
+                 if j < p.len() && p[j] == ']' { j += 1; }
+-                if matched != neg { m(&p[j..], &t[1..]) } else { false }
++                matched != neg && m(&p[j..], &t[1..])
+             }
+             '\\' => p.len() > 1 && !t.is_empty() && t[0] == p[1] && m(&p[2..], &t[1..]),
+             c if (c == '@' || c == '?' || c == '*' || c == '+' || c == '!')
+@@ -16185,6 +16309,9 @@ fn __sh_v_len(name: &str) -> i64 {
+             c => !t.is_empty() && t[0] == c && m(&p[1..], &t[1..]),
+         }
+     }
++    let pat = pat.split('\0').next().unwrap_or(pat);
++    let p: Vec<char> = pat.chars().collect();
++    let t: Vec<char> = s.chars().collect();
+     m(&p, &t)
+ }"#,
+         "strippre" => r#"fn __sh_strippre(s: &str, pat: &str, greedy: bool) -> String {
+@@ -16297,7 +16424,7 @@ fn __sh_v_len(name: &str) -> i64 {
+     out
+ }"#,
+         "len" => r#"fn __sh_len(s: &str) -> i64 {
+-    s.chars().count() as i64
++    i64::try_from(s.chars().count()).unwrap_or(i64::MAX)
+ }"#,
+         "basename" => r#"fn __sh_basename(s: &str) -> String {
+     match s.rfind('/') { Some(i) => s[i + 1..].to_string(), None => s.to_string() }
+@@ -16395,12 +16522,12 @@ fn __sh_v_len(name: &str) -> i64 {
+     let mut c = std::process::Command::new("bash");
+     c.arg("-c").arg(&cmd).arg("sh").arg(text).arg(pat);
+     c.stdout(std::process::Stdio::piped());
+-    let mut ch = match c.spawn() { Ok(x) => x, Err(_) => return (String::new(), 1) };
++    let Ok(mut ch) = c.spawn() else { return (String::new(), 1) };
+     let mut out = Vec::new();
+     if let Some(mut so) = ch.stdout.take() {
+         let _ = std::io::Read::read_to_end(&mut so, &mut out);
+     }
+-    let rc = ch.wait().map(|s| s.code().unwrap_or(1)).unwrap_or(1);
++    let rc = ch.wait().map_or(1, |s| s.code().unwrap_or(1));
+     let mut s = String::from_utf8_lossy(&out).to_string();
+     while s.ends_with('\n') { s.pop(); }
+     (s, rc)
+@@ -16502,28 +16629,28 @@ fn __sh_v_len(name: &str) -> i64 {
+ 
+     fn cat(v: &[N], t: &[char], i: usize, k: &mut dyn FnMut(usize) -> bool) -> bool {
+         let Some((head, rest)) = v.split_first() else { return k(i); };
+-        m(head, t, i, &mut |j| cat(rest, t, j, &mut *k))
++        m(head, t, i, &mut |after| cat(rest, t, after, &mut *k))
+     }
+ 
+     fn m(n: &N, t: &[char], i: usize, k: &mut dyn FnMut(usize) -> bool) -> bool {
+         match n {
+-            N::Chr(c) => i < t.len() && t[i] == *c && k(i + 1),
++            N::Chr(ch) => i < t.len() && t[i] == *ch && k(i + 1),
+             N::Any => i < t.len() && k(i + 1),
+             N::Bol => i == 0 && k(i),
+             N::Eol => i == t.len() && k(i),
+             N::Cls(neg, rs) => {
+                 if i >= t.len() { return false; }
+-                let c = t[i];
++                let ch = t[i];
+                 let mut hit = false;
+                 for (lo, hi) in rs {
+-                    if c >= *lo && c <= *hi { hit = true; }
++                    if ch >= *lo && ch <= *hi { hit = true; }
+                 }
+                 (hit != *neg) && k(i + 1)
+             }
+-            N::Cat(v) => cat(v, t, i, k),
+-            N::Alt(v) => {
+-                for a in v {
+-                    if m(a, t, i, &mut *k) { return true; }
++            N::Cat(seq) => cat(seq, t, i, k),
++            N::Alt(seq) => {
++                for alt in seq {
++                    if m(alt, t, i, &mut *k) { return true; }
+                 }
+                 false
+             }
+@@ -16532,12 +16659,12 @@ fn __sh_v_len(name: &str) -> i64 {
+                 let mut cur = i;
+                 while pos.len() - 1 < *max {
+                     let mut next: Option<usize> = None;
+-                    m(inner, t, cur, &mut |j| {
+-                        if j > cur && next.is_none() { next = Some(j); }
++                    m(inner, t, cur, &mut |after| {
++                        if after > cur && next.is_none() { next = Some(after); }
+                         false
+                     });
+                     match next {
+-                        Some(j) => { pos.push(j); cur = j; }
++                        Some(step) => { pos.push(step); cur = step; }
+                         None => break,
+                     }
+                 }
+@@ -16721,13 +16848,38 @@ fn array_base_name(name: &str) -> String {
+         .to_string()
+ }
+ 
++/// Decimal digits grouped the way a person writes them (`2_000_000_000`).
++/// clippy's `unreadable_literal` is in the pedantic group, so a bare long
++/// literal is an error in the generated program's `-D warnings` build; the
++/// separator is the fix clippy itself names, and it cannot change the value.
++/// Five digits is where the lint starts, so shorter runs pass through, and a
++/// non-decimal run (hex, a name) is left alone.
++fn group_digits(t: &str) -> String {
++    let (sign, digits) = match t.strip_prefix('-') {
++        Some(rest) => ("-", rest),
++        None => ("", t),
++    };
++    if digits.len() < 5 || !digits.bytes().all(|b| b.is_ascii_digit()) {
++        return t.to_string();
++    }
++    let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
++    for (i, ch) in digits.chars().enumerate() {
++        if i > 0 && (digits.len() - i) % 3 == 0 {
++            out.push('_');
++        }
++        out.push(ch);
++    }
++    format!("{sign}{out}")
++}
++
+ /// Integer literal text (i64-suffixed past i32 range; unsuffixed
+ /// literals default i32 and hard-error on overflow at compile time).
+ fn int_lit(n: i64) -> String {
++    let digits = group_digits(&n.to_string());
+     if n > i32::MAX as i64 || n < i32::MIN as i64 {
+-        format!("{n}i64")
++        format!("{digits}i64")
+     } else {
+-        n.to_string()
++        digits
+     }
+ }
+ 
+@@ -17674,7 +17826,7 @@ impl<'a, 'r> TestParser<'a, 'r> {
+ 
+     fn unary_test(&mut self, op: &str, operand: &str) -> String {
+         match op {
+-            "-n" => format!("(!{operand}.is_empty())"),
++            "-n" => format!("__sh_nonempty(&{operand})"),
+             "-z" => format!("({operand}.is_empty())"),
+             "-f" => {
+                 self.render.add_helper("freg");
+@@ -17752,7 +17904,7 @@ impl<'a, 'r> TestParser<'a, 'r> {
+                 // `[ -t N ]` — a TTY test; the gate's fds are not TTYs
+                 "false".to_string()
+             }
+-            _ => format!("(!{operand}.is_empty())"),
++            _ => format!("__sh_nonempty(&{operand})"),
+         }
+     }
+ 
+@@ -17858,10 +18010,22 @@ impl<'a, 'r> TestParser<'a, 'r> {
+                                     format!("({lo} != {ro})")
+                                 };
+                             }
++                            // A constant RHS needs no owned copy either: a
++                            // `String` compares against `&str` in place, so
++                            // the lhs's `.to_string()` goes away
++                            // (`clippy::cmp_owned` on `x == "lit".to_string()`).
++                            // A NUMERIC lhs keeps its string form — that
++                            // operand really is not a string.
++                            let ro = Render::rust_str(rlit);
++                            let lo = if lhs_num {
++                                l.clone()
++                            } else {
++                                strip_word_coercion(&l).to_string()
++                            };
+                             return if eq {
+-                                format!("({l} == {r})")
++                                format!("({lo} == {ro})")
+                             } else {
+-                                format!("({l} != {r})")
++                                format!("({lo} != {ro})")
+                             };
+                         }
+                     } else {

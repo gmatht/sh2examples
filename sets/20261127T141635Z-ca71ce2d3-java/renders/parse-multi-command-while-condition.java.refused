@@ -1,0 +1,1 @@
+otranspiler: expr not in the java subset (str ctx): Call { func: "block", args: [Arrow([Expr(Call { func: "builtin", args: [Str("echo", DoubleQuoted), Array([Str("checking...", DoubleQuoted)])] }), Expr(Call { func: "exec", args: [Str("test", DoubleQuoted), Array([Str("-f", DoubleQuoted), Str("/tmp/somefile", DoubleQuoted)])] })])] }
